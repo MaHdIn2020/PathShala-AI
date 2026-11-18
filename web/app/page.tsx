@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useRef, useEffect } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -241,6 +242,14 @@ export default function Home() {
       <header className="mb-8 text-center">
         <h1 className="text-3xl font-bold text-emerald-700">পাঠশালা এআই (PathShala AI)</h1>
         <p className="text-slate-600 mt-1">জাতীয় শিক্ষাক্রম ও পাঠ্যপুস্তক বোর্ড (NCTB) ভিত্তিক নির্ভরযোগ্য গৃহশিক্ষক</p>
+        <div className="mt-3">
+          <Link
+            href="/teacher"
+            className="inline-block text-xs px-3 py-1.5 rounded-full border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 font-medium"
+          >
+            📊 শিক্ষক ড্যাশবোর্ড
+          </Link>
+        </div>
       </header>
 
       <form onSubmit={handleSubmit} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mb-6">

@@ -146,3 +146,8 @@ def cite(chunk_id: int):
 @app.get("/teacher/topics")
 def teacher_topics(limit: int = 50):
     return db.topic_counts(limit)
+
+
+@app.get("/teacher/summary")
+def teacher_summary(limit: int = 50):
+    return db.teacher_summary(limit)
