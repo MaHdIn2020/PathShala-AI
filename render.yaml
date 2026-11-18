@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: pathshala-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: LLM_MODEL
+        value: gemini/gemini-3-flash-preview
+      - key: LLM_FAST_MODEL
+        value: gemini/gemini-3.5-flash-lite
+      - key: LLM_VERIFY_MODEL
+        value: gemini/gemini-3.1-flash-lite
+      - key: EMBED_PROVIDER
+        value: local
+      - key: EMBED_MODEL
+        value: BAAI/bge-m3
+      - key: EMBED_DIM
+        value: "1024"
+
