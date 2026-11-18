@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -29,6 +29,33 @@ interface AnswerResponse {
   cost_usd: number;
   cached: boolean;
   query_id?: number | null;
+  transcribed_question?: string;
+}
+
+interface SpeechRecognitionEvent {
+  results: {
+    [index: number]: {
+      [index: number]: {
+        transcript: string;
+      };
+    };
+  };
+}
+
+interface SpeechRecognitionInstance {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+interface IWindow extends Window {
+  SpeechRecognition?: new () => SpeechRecognitionInstance;
+  webkitSpeechRecognition?: new () => SpeechRecognitionInstance;
 }
 
 export default function Home() {
@@ -40,6 +67,111 @@ export default function Home() {
   const [expandedCitation, setExpandedCitation] = useState<number | null>(null);
   const [feedbackSent, setFeedbackSent] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isListening, setIsListening] = useState<boolean>(false);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const win = window as unknown as IWindow;
+      const SpeechRecognition = win.SpeechRecognition || win.webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+        recognition.lang = "bn-BD";
+        recognition.continuous = false;
+        recognition.interimResults = false;
+
+        recognition.onresult = (event: SpeechRecognitionEvent) => {
+          const transcript = event.results[0]?.[0]?.transcript;
+          if (transcript) {
+            setQuestion((prev) => (prev ? `${prev} ${transcript}` : transcript));
+          }
+          setIsListening(false);
+        };
+
+        recognition.onerror = () => {
+          setIsListening(false);
+        };
+
+        recognition.onend = () => {
+          setIsListening(false);
+        };
+
+        recognitionRef.current = recognition;
+      }
+    }
+  }, []);
+
+  const toggleListening = () => {
+    if (!recognitionRef.current) {
+      alert("আপনার ব্রাউজারে বাংলা কণ্ঠ শনাক্তকরণ (Voice Input) সমর্থিত নয়।");
+      return;
+    }
+    if (isListening) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+    } else {
+      try {
+        recognitionRef.current.start();
+        setIsListening(true);
+      } catch {
+        setIsListening(false);
+      }
+    }
+  };
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) {
+      setErrorMsg("ছবির আকার ২ মেগাবাইট (2MB) এর চেয়ে ছোট হতে হবে।");
+      return;
+    }
+
+    setLoading(true);
+    setResponse(null);
+    setErrorMsg(null);
+    setFeedbackSent(false);
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const base64Data = (reader.result as string).split(",")[1];
+        const res = await fetch(`${API_BASE}/ask-image`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            image_base64: base64Data,
+            mime_type: file.type || "image/jpeg",
+            class_level: Number(classLevel),
+            subject: subject.trim() || null,
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error(`সার্ভার ত্রুটি: ${res.statusText} (${res.status})`);
+        }
+
+        const data: AnswerResponse = await res.json();
+        setResponse(data);
+        if (data.transcribed_question) {
+          setQuestion(data.transcribed_question);
+        }
+      } catch (err: unknown) {
+        if (err instanceof Error) {
+          setErrorMsg(err.message);
+        } else {
+          setErrorMsg("ছবি পাঠাতে সমস্যা হয়েছে। আবার চেষ্টা করুন।");
+        }
+      } finally {
+        setLoading(false);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -146,13 +278,44 @@ export default function Home() {
         </div>
 
         <div className="mb-4">
-          <label htmlFor="question-input" className="block text-sm font-medium text-slate-700 mb-1">
-            তোমার প্রশ্ন লিখো:
-          </label>
+          <div className="flex justify-between items-center mb-1">
+            <label htmlFor="question-input" className="block text-sm font-medium text-slate-700">
+              তোমার প্রশ্ন লিখো বা ছবি তোলো:
+            </label>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={toggleListening}
+                className={`text-xs px-2.5 py-1 rounded-full border transition flex items-center gap-1 ${
+                  isListening
+                    ? "bg-rose-100 text-rose-700 border-rose-300 animate-pulse font-medium"
+                    : "bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200"
+                }`}
+              >
+                🎤 {isListening ? "শুনছি..." : "মুখে বলো"}
+              </button>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="text-xs px-2.5 py-1 rounded-full border border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1"
+              >
+                📷 ছবি আপলোড
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={handleImageUpload}
+                className="hidden"
+              />
+            </div>
+          </div>
+
           <textarea
             id="question-input"
             rows={3}
-            placeholder="পাঠ্যবই থেকে যেকোনো প্রশ্ন জিজ্ঞাসা করো..."
+            placeholder="পাঠ্যবই থেকে যেকোনো প্রশ্ন জিজ্ঞাসা করো অথবা পাতার ছবি তোলো..."
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             className="w-full border border-slate-300 rounded-lg p-3 focus:ring-2 focus:ring-emerald-500"

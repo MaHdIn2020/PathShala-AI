@@ -23,6 +23,14 @@ class FeedbackReq(BaseModel):
     comment: str | None = None
 
 
+class AskImageReq(BaseModel):
+    image_base64: str
+    mime_type: str = "image/jpeg"
+    class_level: int = Field(ge=1, le=12)
+    subject: str | None = None
+    session_id: str | None = None
+
+
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -37,6 +45,59 @@ def ask(req: AskReq):
             "class_level": req.class_level,
             "subject": req.subject,
             "question": req.question[:600],
+            "topic": res.get("topic"),
+            "top_score": res.get("top_score"),
+            "refused": res["refused"],
+            "reason": res.get("reason"),
+            "latency_ms": res["latency_ms"],
+            "cost_usd": res["cost_usd"],
+        }
+    )
+    return res
+
+
+@app.post("/ask-image")
+def ask_image(req: AskImageReq):
+    """Photo input: 2MB limit, no image storage. Transcribes question then calls answer pipeline."""
+    # 2MB base64 check (~2.8M characters)
+    if len(req.image_base64) > 2_800_000:
+        raise HTTPException(413, "চিত্রের আকার ২ মেগাবাইট (2MB) এর বেশি হতে পারবে না।")
+
+    system = pipeline.load_prompt("vision_ocr")
+    cfg = get_config()
+    ocr_res, usage = llm.chat_image_json(
+        system=system,
+        image_base64=req.image_base64,
+        mime_type=req.mime_type,
+        model=cfg.llm_model,
+        max_tokens=400,
+    )
+    extracted_q = (ocr_res.get("question") or "").strip()
+    if not extracted_q or extracted_q.lower() == "[unreadable]":
+        return {
+            "answer": "ছবি থেকে প্রশ্নটি স্পষ্টভাবে পড়া যায়নি। অনুগ্রহ করে আবার পরিষ্কার ছবি তুলুন।",
+            "steps": [],
+            "citations": [],
+            "confidence": 0.0,
+            "refused": True,
+            "reason": "unreadable_image",
+            "top_score": 0.0,
+            "topic": None,
+            "latency_ms": 0,
+            "cost_usd": usage.get("cost", 0.0),
+            "cached": False,
+            "query": None,
+        }
+
+    res = pipeline.answer(extracted_q, req.class_level, req.subject)
+    res["transcribed_question"] = extracted_q
+    res["cost_usd"] = res.get("cost_usd", 0.0) + usage.get("cost", 0.0)
+    res["query_id"] = db.log_query(
+        {
+            "session_id": req.session_id,
+            "class_level": req.class_level,
+            "subject": req.subject,
+            "question": extracted_q[:600],
             "topic": res.get("topic"),
             "top_score": res.get("top_score"),
             "refused": res["refused"],

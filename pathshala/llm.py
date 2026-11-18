@@ -86,3 +86,33 @@ def plain_answer(question: str, class_level: int, model: str, max_tokens: int = 
     u = getattr(r, "usage", None)
     usage = {"prompt": getattr(u, "prompt_tokens", 0) or 0, "completion": getattr(u, "completion_tokens", 0) or 0, "cost": _cost(r)}
     return r.choices[0].message.content or "", usage
+
+
+def chat_image_json(system: str, image_base64: str, mime_type: str, model: str, max_tokens: int = 500):
+    """Sends image to multimodal LLM to transcribe question text. Returns (obj, usage)."""
+    litellm = _litellm()
+
+    image_url = f"data:{mime_type};base64,{image_base64}"
+    r = litellm.completion(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Transcribe the question from this textbook image:"},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            },
+        ],
+        temperature=0,
+        max_tokens=max_tokens,
+        response_format={"type": "json_object"},
+    )
+    u = getattr(r, "usage", None)
+    usage = {
+        "prompt": getattr(u, "prompt_tokens", 0) or 0,
+        "completion": getattr(u, "completion_tokens", 0) or 0,
+        "cost": _cost(r),
+    }
+    return parse_json(r.choices[0].message.content or ""), usage
