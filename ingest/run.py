@@ -63,7 +63,7 @@ def contextualise(recs: list[dict], cfg, workers: int = 4) -> float:
     return cost[0]
 
 
-def embed_all(recs: list[dict], batch: int = 16) -> None:
+def embed_all(recs: list[dict], batch: int = 8) -> None:
     from pathshala.embed import embed_texts, to_pgvector
 
     for i in range(0, len(recs), batch):
