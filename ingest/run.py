@@ -109,6 +109,14 @@ def upsert(recs: list[dict]) -> None:
             )
 
 
+def existing_refs() -> set:
+    from pathshala.db import get_conn
+
+    with get_conn() as c, c.cursor() as cur:
+        cur.execute("select chunk_ref from chunks where embedding is not null")
+        return {r["chunk_ref"] for r in cur.fetchall()}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="data/raw/mendeley")
@@ -116,6 +124,8 @@ def main(argv=None) -> int:
     ap.add_argument("--no-ctx", action="store_true", help="skip LLM contextualisation (saves quota)")
     ap.add_argument("--dry-run", action="store_true", help="load + normalise only, print stats")
     ap.add_argument("--max-class", type=int, default=5, help="highest class to ingest (0 = all classes)")
+    ap.add_argument("--save-every", type=int, default=100, help="embed + save in batches of N (resumable)")
+    ap.add_argument("--force", action="store_true", help="re-embed chunks already in the DB")
     a = ap.parse_args(argv)
     cfg = get_config()
     t0 = time.time()
@@ -135,8 +145,15 @@ def main(argv=None) -> int:
         return 0
     if not a.no_ctx:
         print(f"contextualised; llm cost ~${contextualise(recs, cfg):.4f}")
-    embed_all(recs)
-    upsert(recs)
+    if not a.force:  # resume: skip chunks already embedded in the DB
+        done = existing_refs()
+        recs = [r for r in recs if r["chunk_ref"] not in done]
+        print(f"{len(done)} already in DB; {len(recs)} to do")
+    for i in range(0, len(recs), a.save_every):
+        part = recs[i : i + a.save_every]
+        embed_all(part)
+        upsert(part)
+        print(f"saved {min(i + a.save_every, len(recs))}/{len(recs)}  elapsed {time.time() - t0:.0f}s", flush=True)
     print(f"done in {time.time() - t0:.0f}s")
     return 0
 
