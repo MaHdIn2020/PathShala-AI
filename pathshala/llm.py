@@ -35,12 +35,34 @@ def _cost(r) -> float:
         return 0.0
 
 
+_FALLBACK_MODELS = (
+    "gemini/gemini-3-flash-preview",
+    "gemini/gemini-flash-lite-latest",
+    "gemini/gemini-3.1-flash-lite",
+)
+
+
+def _complete(model: str, **kwargs):
+    """Run litellm.completion with fallback on transient 503 / rate-limit errors."""
+    litellm = _litellm()
+    models = [model] + [m for m in _FALLBACK_MODELS if m != model]
+    last_err = None
+    for m in models:
+        try:
+            return litellm.completion(model=m, **kwargs)
+        except Exception as e:
+            msg = str(e)
+            if any(code in msg or code in type(e).__name__ for code in ("503", "UNAVAILABLE", "ServiceUnavailable", "RateLimit", "429")):
+                last_err = e
+                continue
+            raise
+    raise last_err
+
+
 def chat_json(system: str, user: str, model: str, max_tokens: int = 1500):
     """Returns (obj, usage). obj={} if model output was not valid JSON."""
-    litellm = _litellm()
-
-    r = litellm.completion(
-        model=model,
+    r = _complete(
+        model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         temperature=0,
         max_tokens=max_tokens,
@@ -57,10 +79,8 @@ def chat_json(system: str, user: str, model: str, max_tokens: int = 1500):
 
 def chat_text(system: str, user: str, model: str, max_tokens: int = 200):
     """Plain-text completion (used for chunk contextualisation). Returns (text, usage)."""
-    litellm = _litellm()
-
-    r = litellm.completion(
-        model=model,
+    r = _complete(
+        model,
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         temperature=0,
         max_tokens=max_tokens,
@@ -72,10 +92,8 @@ def chat_text(system: str, user: str, model: str, max_tokens: int = 200):
 
 def plain_answer(question: str, class_level: int, model: str, max_tokens: int = 700):
     """Baseline for eval: same LLM, NO retrieval."""
-    litellm = _litellm()
-
-    r = litellm.completion(
-        model=model,
+    r = _complete(
+        model,
         messages=[
             {"role": "system", "content": f"Answer in simple Bangla for a class {class_level} student in Bangladesh. Be concise."},
             {"role": "user", "content": question},

@@ -68,6 +68,11 @@ class TestPipeline(unittest.TestCase):
     def test_duplicate_citations_deduped(self):
         self.assertEqual(len(clean_citations([{"chunk_id": 7}, {"chunk_id": "7"}], CHUNKS)), 1)
 
+    def test_clean_citations_accepts_id_variants_only_from_retrieved_chunks(self):
+        c = clean_citations([{"id": 7}, 7, "999", None], CHUNKS)
+        self.assertEqual(len(c), 1)
+        self.assertEqual(c[0]["chunk_id"], 7)
+
     def test_verifier_fail_refuses(self):
         r = answer("গতি কী?", 9, cfg=_cfg(VERIFY=1), retrieve_fn=retrieve_ok, llm_fn=llm_factory(GOOD, verdict="FAIL"))
         self.assertTrue(r["refused"])

@@ -63,9 +63,10 @@ def clean_citations(citations, chunks: list[dict]) -> list[dict]:
     by_id = {str(c["id"]): c for c in chunks}
     out, seen = [], set()
     for ci in citations or []:
-        if not isinstance(ci, dict):
+        raw_id = ci.get("chunk_id", ci.get("id")) if isinstance(ci, dict) else ci
+        if raw_id is None:
             continue
-        c = by_id.get(str(ci.get("chunk_id")))
+        c = by_id.get(str(raw_id))
         if c is None or c["id"] in seen:
             continue
         seen.add(c["id"])
