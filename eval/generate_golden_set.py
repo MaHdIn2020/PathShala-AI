@@ -50,37 +50,59 @@ OFF_SYLLABUS = [
 ]
 
 
-def generate_draft(target_answerable: int = 150):
-    cfg = get_config()
-    print("Loading chunks from raw dataset...")
-    recs, _ = prepare(load_dir("data/raw/mendeley"), max_class=5)
-    print(f"Total available chunks: {len(recs)}")
+_META_QS = {"শ্রেণি কত?", "বিষয় কী?", "বিষয় কী?", "অধ্যায়ের নাম কী?", "অধ্যায়ের নাম কী?"}
 
-    # Sample chunks with good length (>150 chars) across classes and subjects
-    eligible = [r for r in recs if len(r["text"]) >= 150 and r.get("chapter_no") is not None]
-    step = max(1, len(eligible) // 70)
-    sampled = eligible[::step][:70]
 
-    system = load_prompt("eval_qa_gen")
-    items_out = []
-    idx = 1
-
-    print(f"Generating question-answer pairs using {cfg.llm_fast_model}...")
-    for chunk in sampled:
-        if len(items_out) >= target_answerable:
-            break
-        prompt_user = f"PASSAGE:\nশ্রেণি: {chunk['class_level']}, বিষয়: {chunk['subject']}, অধ্যায়: {chunk.get('chapter', '')}\n{chunk['text'][:1500]}"
+def _gen_for_chunk(system: str, chunk: dict, models: list[str]) -> list[dict]:
+    prompt_user = f"PASSAGE:\nঅধ্যায়: {chunk.get('chapter', '')}\n{chunk['text'][:1500]}"
+    for model in models:
         try:
-            res, _ = chat_json(system, prompt_user, cfg.llm_fast_model, max_tokens=500)
-            qa_list = res.get("items") or []
-            for qa in qa_list:
+            res, _ = chat_json(system, prompt_user, model, max_tokens=500)
+            items = res.get("items") or []
+            if items:
+                return items
+        except Exception as e:
+            print(f"model {model} failed on {chunk['chunk_ref']}: {str(e)[:120]}", file=sys.stderr)
+    return []
+
+
+def topup_and_clean(min_answerable: int = 155, out_file: str = "eval/golden_set.jsonl") -> tuple[int, int]:
+    """Filter trivial meta-questions, top up answerable items >= min_answerable, and append OFF_SYLLABUS."""
+    cfg = get_config()
+    out_path = Path(out_file)
+    existing = []
+    if out_path.exists():
+        for line in out_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("answerable") and row.get("question", "").strip() not in _META_QS:
+                existing.append(row)
+
+    used_refs = {ref for r in existing for ref in (r.get("gold_refs") or [])}
+    models = list(dict.fromkeys([cfg.llm_fast_model, "gemini/gemini-flash-lite-latest", "gemini/gemini-3.1-flash-lite"]))
+
+    if len(existing) < min_answerable:
+        recs, _ = prepare(load_dir("data/raw/mendeley"), max_class=5)
+        eligible = [
+            r for r in recs
+            if len(r["text"]) >= 180 and r.get("chapter_no") is not None and r["chunk_ref"] not in used_refs
+        ]
+        step = max(1, len(eligible) // 80)
+        sampled = eligible[::step]
+        system = load_prompt("eval_qa_gen")
+
+        for chunk in sampled:
+            if len(existing) >= min_answerable:
+                break
+            for qa in _gen_for_chunk(system, chunk, models):
                 q = (qa.get("question") or "").strip()
                 kws = [str(k).strip() for k in qa.get("keywords") or [] if str(k).strip()]
-                if not q or not kws:
+                if not q or not kws or q in _META_QS:
                     continue
-                items_out.append(
+                existing.append(
                     {
-                        "id": f"q_{idx:03d}",
+                        "id": "",
                         "class_level": chunk["class_level"],
                         "subject": chunk["subject"],
                         "question": q,
@@ -90,17 +112,18 @@ def generate_draft(target_answerable: int = 150):
                         "gold_refs": [chunk["chunk_ref"]],
                     }
                 )
-                idx += 1
-                if len(items_out) >= target_answerable:
+                if len(existing) >= min_answerable:
                     break
-        except Exception as e:
-            print(f"Failed on chunk {chunk['chunk_ref']}: {e}", file=sys.stderr)
 
-    print(f"Generated {len(items_out)} answerable items.")
+    all_rows = []
+    idx = 1
+    for row in existing:
+        row["id"] = f"q_{idx:03d}"
+        all_rows.append(row)
+        idx += 1
 
-    # Add off-syllabus questions
     for cls, subj, q in OFF_SYLLABUS:
-        items_out.append(
+        all_rows.append(
             {
                 "id": f"q_{idx:03d}",
                 "class_level": cls,
@@ -114,14 +137,14 @@ def generate_draft(target_answerable: int = 150):
         )
         idx += 1
 
-    out_path = Path("eval/golden_set.jsonl")
     with out_path.open("w", encoding="utf-8") as f:
-        for row in items_out:
+        for row in all_rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    print(f"Wrote {len(items_out)} total questions ({len(items_out) - len(OFF_SYLLABUS)} answerable + {len(OFF_SYLLABUS)} off-syllabus) to {out_path}")
+    print(f"Wrote {len(all_rows)} rows ({len(existing)} answerable + {len(OFF_SYLLABUS)} off-syllabus) to {out_path}")
+    return len(existing), len(OFF_SYLLABUS)
 
 
 if __name__ == "__main__":
-    generate_draft()
+    topup_and_clean()
 
