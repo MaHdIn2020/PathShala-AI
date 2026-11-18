@@ -151,3 +151,10 @@ def teacher_topics(limit: int = 50):
 @app.get("/teacher/summary")
 def teacher_summary(limit: int = 50):
     return db.teacher_summary(limit)
+
+
+@app.get("/teacher/clusters")
+def teacher_clusters(k: int = 6, use_llm: bool = False):
+    from . import clustering
+
+    return clustering.cluster_db_queries(k=k, use_llm=use_llm)
