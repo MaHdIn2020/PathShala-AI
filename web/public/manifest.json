@@ -1,0 +1,18 @@
+{
+  "name": "পাঠশালা এআই (PathShala AI)",
+  "short_name": "পাঠশালা AI",
+  "description": "এনসিটিবি প্রাথমিক পাঠ্যবই ভিত্তিক বাংলা এআই গৃহশিক্ষক",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#047857",
+  "lang": "bn",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    }
+  ]
+}
+

@@ -3,7 +3,7 @@ import unittest
 
 from pathshala import pipeline
 from pathshala.config import get_config
-from pathshala.pipeline import REFUSAL, answer, clean_citations
+from pathshala.pipeline import REFUSAL, SAFETY_MESSAGE, answer, clean_citations
 
 CHUNKS = [
     {"id": 7, "chunk_ref": "3-math-2-4", "text": "গতি হলো সময়ের সাথে অবস্থানের পরিবর্তন।", "chapter_no": 2, "chapter": "যোগ", "class_level": 3, "subject": "math", "page_start": None, "page_end": None, "book": "গণিত ৩", "sim": 0.8}
@@ -126,6 +126,20 @@ class TestPipeline(unittest.TestCase):
         r = answer("গতি কী?", 9, cfg=cfg, retrieve_fn=retrieve_ok, llm_fn=boom)
         self.assertTrue(r["cached"])
         self.assertEqual(calls, [])
+
+    def test_distress_keyword_returns_safety_message(self):
+        called = []
+
+        def boom(*a, **k):
+            called.append(1)
+            raise AssertionError("should not call llm on distress query")
+
+        for phrase in ("আমি মরে যেতে চাই", "I want to die / suicide"):
+            r = answer(phrase, 5, cfg=_cfg(), retrieve_fn=boom, llm_fn=boom)
+            self.assertTrue(r["refused"])
+            self.assertEqual(r["reason"], "safety_distress")
+            self.assertEqual(r["answer"], SAFETY_MESSAGE)
+            self.assertEqual(called, [])
 
 
 if __name__ == "__main__":

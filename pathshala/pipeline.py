@@ -11,8 +11,31 @@ from .config import get_config
 from .text import normalize_bangla
 
 REFUSAL = "এই প্রশ্নের উত্তর পাঠ্যবইয়ে খুঁজে পাইনি।"
+SAFETY_MESSAGE = (
+    "তোমার কথা শুনে মনে হচ্ছে তুমি খুব কঠিন সময় পার করছ। তুমি একা নও—অনুগ্রহ করে এখনই মা-বাবা, শিক্ষক বা "
+    "পরিবারের কোনো বিশ্বস্ত বড় মানুষের সাথে কথা বলো। জরুরি সহায়তার জন্য শিশু সহায়তা হেল্পলাইন ১০৯৮ (1098) "
+    "বা কান পেতে রই হেল্পলাইনে যোগাযোগ করতে পারো।"
+)
+_DISTRESS_KEYWORDS = (
+    "আত্মহত্যা",
+    "মরে যেতে চাই",
+    "বাঁচতে চাই না",
+    "নিজেকে শেষ",
+    "মরতে চাই",
+    "নিজের ক্ষতি",
+    "suicide",
+    "kill myself",
+    "self harm",
+    "self-harm",
+    "want to die",
+)
 _PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 _CACHE: dict = {}
+
+
+def is_distress_query(text: str) -> bool:
+    t = normalize_bangla(text).lower()
+    return any(k in t for k in _DISTRESS_KEYWORDS)
 
 
 def load_prompt(name: str) -> str:
@@ -191,6 +214,8 @@ def answer(question: str, class_level: int, subject: str | None = None, *, cfg=N
     q = normalize_bangla(question)[: cfg.max_question_chars]
     if not q:
         return _refuse("empty_question", t0)
+    if is_distress_query(q):
+        return {**_refuse("safety_distress", t0, query=q), "answer": SAFETY_MESSAGE}
 
     key = hashlib.sha256(f"{q}|{class_level}|{subject}".encode()).hexdigest()
     if cfg.cache and key in _CACHE:
