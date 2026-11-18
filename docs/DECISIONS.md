@@ -12,6 +12,7 @@ Format: `Dn | date | decision | why`
 - D10 | 2026-11-18 | Ingest scope = classes 1-5 (7,081 chunks after prep); `--max-class 0` ingests all | dataset is NCTB-SchoolText (classes 1-10, 58,872 chunks); see docs/DATA_REPORT.md
 - D11 | 2026-11-18 | Models: LLM_MODEL=gemini-3-flash-preview, LLM_FAST_MODEL=gemini-3.5-flash-lite, LLM_VERIFY_MODEL=gemini-3.1-flash-lite | `gemini-flash-latest` returned 503 on repeated tries; these answered a live Bangla call
 - D12 | 2026-11-18 | Local bge-m3 loaded in bfloat16, max_seq_length 512, small batches | machine had about 1 GB free RAM and fp32 batch 16 ran out of memory; 50 chunks took 237s
+- D13 | 2026-11-19 | Full ingest complete (`--no-ctx`): 7,081 chunks across 33 textbooks (classes 1-5), 7,081 non-null embeddings | ran in 30,127s (~8.4h) on local CPU (`BAAI/bge-m3`, bfloat16); $0 embedding cost; HNSW (`chunks_emb_idx`) + GIN (`chunks_fts_idx`) indexes verified (`explain analyze` FTS scan 10.6ms)
 
 ## Blockers
 (none yet)
