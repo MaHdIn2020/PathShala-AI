@@ -1,0 +1,81 @@
+{
+  "name": "PathShala AI - Low Confidence & Refusal Alert Webhook",
+  "active": false,
+  "nodes": [
+    {
+      "id": "low-conf-webhook",
+      "name": "Low Confidence Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pathshala-low-confidence",
+        "responseMode": "onReceived"
+      }
+    },
+    {
+      "id": "filter-refused",
+      "name": "Filter Refused or Low Score",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [480, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "combinator": "or",
+          "conditions": [
+            {
+              "id": "cond-refused",
+              "leftValue": "={{ $json.body.refused }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            },
+            {
+              "id": "cond-score",
+              "leftValue": "={{ Number($json.body.top_score ?? 1) }}",
+              "rightValue": 0.35,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "send-alert",
+      "name": "Send Teacher Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 280],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TEACHER_ALERT_WEBHOOK_URL || 'http://localhost:5678/webhook/alert-sink' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { class_level: $json.body.class_level, subject: $json.body.subject, topic: $json.body.topic, question: $json.body.question, top_score: $json.body.top_score, reason: $json.body.reason } }}"
+      }
+    }
+  ],
+  "connections": {
+    "Low Confidence Webhook": {
+      "main": [[{ "node": "Filter Refused or Low Score", "type": "main", "index": 0 }]]
+    },
+    "Filter Refused or Low Score": {
+      "main": [[{ "node": "Send Teacher Alert", "type": "main", "index": 0 }], []]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
+

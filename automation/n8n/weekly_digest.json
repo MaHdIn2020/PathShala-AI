@@ -1,0 +1,74 @@
+{
+  "name": "PathShala AI - Weekly Teacher Analytics Digest",
+  "active": false,
+  "nodes": [
+    {
+      "id": "weekly-schedule",
+      "name": "Weekly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 0"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fetch-summary",
+      "name": "Fetch Teacher Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.PATHSHALA_API_URL || 'http://localhost:8000') + '/teacher/summary' }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "format-digest",
+      "name": "Format Bangla Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "jsCode": "const s = $input.first().json;\nconst weak = (s.chapters || []).filter(c => c.refusal_rate >= 0.2).slice(0, 5);\nconst lines = [\n  `পাঠশালা এআই সাপ্তাহিক প্রতিবেদন`,\n  `মোট প্রশ্ন: ${s.total_queries} (ডেমো: ${s.seed_queries}, প্রকৃত: ${s.real_queries})`,\n  `প্রত্যাখ্যানের হার: ${(s.refusal_rate * 100).toFixed(1)}%`,\n  `সহায়ক উত্তরের হার: ${(s.helpful_rate * 100).toFixed(1)}%`,\n  `দুর্বল অধ্যায়সমূহ: ${weak.map(c => `${c.topic} (${(c.refusal_rate * 100).toFixed(0)}%)`).join(', ') || 'নেই'}`\n];\nreturn [{ json: { message: lines.join('\\n'), summary: s } }];"
+      }
+    },
+    {
+      "id": "send-digest",
+      "name": "Send Digest Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TEACHER_DIGEST_WEBHOOK_URL || 'http://localhost:5678/webhook/digest-sink' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $json.message } }}"
+      }
+    }
+  ],
+  "connections": {
+    "Weekly Schedule": {
+      "main": [[{ "node": "Fetch Teacher Summary", "type": "main", "index": 0 }]]
+    },
+    "Fetch Teacher Summary": {
+      "main": [[{ "node": "Format Bangla Digest", "type": "main", "index": 0 }]]
+    },
+    "Format Bangla Digest": {
+      "main": [[{ "node": "Send Digest Notification", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
+
