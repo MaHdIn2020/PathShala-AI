@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Block files that must never reach GitHub + obvious secrets.
+bad=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(^|/)(\.env|\.venv|node_modules|\.next|__pycache__)(/|$)|^data/|\.(pdf|zip|parquet|sqlite|db)$|^eval/results.*\.json$|^\.agents?/|^GEMINI\.md$|^ANTIGRAVITY_|^docs/(TASKS|ANTIGRAVITY_GUIDE|SUBMISSION_MAP|VIDEO_SCRIPT)\.md$')
+if [ -n "$bad" ]; then echo "pre-commit: not for GitHub:" >&2; echo "$bad" | sed 's/^/  /' >&2; echo "  unstage: git restore --staged <file>" >&2; exit 1; fi
+big=$(git diff --cached --name-only --diff-filter=ACM | while read -r f; do [ -f "$f" ] && [ "$(wc -c <"$f")" -gt 2000000 ] && echo "$f"; done)
+if [ -n "$big" ]; then echo "pre-commit: file over 2MB:" >&2; echo "$big" | sed 's/^/  /' >&2; exit 1; fi
+if git diff --cached -U0 | grep -E '^\+' | grep -Eq 'AIza[0-9A-Za-z_-]{30,}|sk-[A-Za-z0-9]{20,}|(GEMINI|OPENAI|ANTHROPIC)_API_KEY=[A-Za-z0-9_-]{15,}|postgresql://[^:@ ]+:[^@ ]{6,}@[^ /]*(supabase|neon|render|aws)'; then
+  echo "pre-commit: possible secret in staged diff" >&2; exit 1; fi
+exit 0

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "nctb-corpus": {
+      "command": "python",
+      "args": ["-m", "mcp_server.server"],
+      "cwd": "REPLACE_WITH_ABSOLUTE_PATH_TO_pathshala-ai",
+      "env": { "DATABASE_URL": "postgresql://postgres:postgres@localhost:5432/pathshala" }
+    }
+  }
+}

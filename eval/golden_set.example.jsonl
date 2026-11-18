@@ -1,0 +1,2 @@
+{"id": "ex1", "class_level": 9, "subject": "physics", "question": "PLACEHOLDER: replace with real textbook question", "answerable": true, "keywords": ["keyword1", "keyword2"], "gold_chapters": [1], "gold_refs": []}
+{"id": "ex2", "class_level": 9, "subject": "physics", "question": "PLACEHOLDER out-of-syllabus question (e.g. about cooking)", "answerable": false, "keywords": [], "gold_chapters": [], "gold_refs": []}

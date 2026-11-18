@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Enforce plain, human-style commit messages. Installed via: git config core.hooksPath .githooks
+msg_file=$1
+first=$(grep -v '^#' "$msg_file" | head -n1)
+all=$(grep -v '^#' "$msg_file")
+die() { echo "commit-msg: $1" >&2; echo "  got: $first" >&2; echo "  style: short lowercase imperative, e.g. 'add hybrid search with rrf'" >&2; exit 1; }
+[ -z "$first" ] && die "empty message"
+[ ${#first} -gt 72 ] && die "first line over 72 chars"
+echo "$first" | grep -Eq '^(T[0-9]+|H[0-9]+)\b' && die "no task ids in message"
+echo "$first" | grep -Eiq '^(feat|fix|chore|docs|refactor|test|build|ci|style|perf)(\([^)]*\))?!?:' && die "no conventional-commit prefixes"
+echo "$all" | grep -Eiq 'co-authored-by|generated (with|by)|claude|gemini|antigravity|copilot|chatgpt|openai|as an ai|🤖|✨|🚀' && die "no tool/AI trailers, signatures or emoji"
+exit 0

@@ -1,0 +1,34 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+web/.next/
+data/raw/*
+!data/raw/.gitkeep
+!data/raw/mendeley/
+data/raw/mendeley/*
+data/cache/*
+!data/cache/.gitkeep
+eval/results*.json
+.DS_Store
+
+# local-only (agent kit + internal notes); not for GitHub
+.agents/
+.agent/
+.gemini/
+GEMINI.md
+ANTIGRAVITY_MASTER_PROMPT.md
+docs/TASKS.md
+docs/ANTIGRAVITY_GUIDE.md
+docs/SUBMISSION_MAP.md
+docs/VIDEO_SCRIPT.md
+docs/PLAN.md
+# tooling / misc
+.pytest_cache/
+.ruff_cache/
+.vscode/
+.idea/
+*.log
+*.zip
+*.pdf

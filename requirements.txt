@@ -1,0 +1,13 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2
+psycopg[binary]>=3.1
+litellm>=1.40
+sentence-transformers>=3.0
+python-dotenv>=1.0
+langgraph>=0.2
+mcp>=1.2
+pillow>=10                # image upload (photo question)
+# PDF/OCR path (only if adding classes 6-12): pymupdf, pytesseract + system tesseract-ocr-ben
+ruff>=0.4
+# optional (heavy / stretch): docling, langfuse, ragas, bertopic, neo4j
