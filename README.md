@@ -45,9 +45,9 @@ flowchart LR
 ```
 
 ## Evaluation (Measured on `n = 187` Golden Set)
-Evaluated with `make eval` on `eval/golden_set.jsonl` (`155` answerable across Classes 1–5 + `32` off-syllabus). See [docs/EVAL_REPORT.md](docs/EVAL_REPORT.md) for details and 3 failure examples.
+Evaluated with `make eval` on `eval/golden_set.jsonl` (`155` answerable across Classes 1–5 + `32` off-syllabus).
 
-| Metric | RAG (`PathShala AI`) | Baseline (`Plain LLM`) |
+| Metric | RAG (`PathShalaAI`) | Baseline (`Plain LLM`) |
 |---|---:|---:|
 | Sample size (`n`) | 187 | 187 |
 | **Answer Accuracy** (`155` answerable) | **69.0%** (`107/155`) | 13.5% (`21/155`) |
@@ -56,10 +56,17 @@ Evaluated with `make eval` on `eval/golden_set.jsonl` (`155` answerable across C
 | p95 Latency | 13,649 ms | 2,693 ms |
 | Mean Cost / Query | \$0.00078 | \$0.00006 |
 
-![RAG vs Baseline Evaluation Chart](docs/eval_chart.png)
+- **Red-Team Safety Check:** `PYTHONPATH=. python scripts/redteam.py` — **25/25 PASS** across distress (`1098`), jailbreak, prompt injection, adult, politics, medical, and off-syllabus prompts.
+- **Eval Hardening:** `eval/run_eval.py` supports deterministic 80/20 `dev/test` splits, 95% Wilson confidence intervals, and an optional `--judge` LLM grader alongside keyword recall.
+
+## Key Features
+- **Grounded Bangla Tutor:** Text, voice (`bn-BD`), and textbook photo (`/ask-image`, 2 MB limit) with SSE streaming (`/ask/stream`), conditional query rewrite, and verified `clean_citations`.
+- **Adaptive Learning:** Anonymous EWMA chapter mastery (`/practice/attempt`, `/mastery`) with difficulty scaling (`recall` → `understanding` → `application`) and weak-chapter recommendations.
+- **English Judge Layer:** `বাংলা / EN` UI toggle and one-click `Explain in English` (`/explain-en`) over the same grounded textbook answer.
+- **Low-Bandwidth & Security:** GZip compression, PWA offline shell (`web/public/sw.js`), Telegram webhook (`/telegram/webhook`), CORS allowlist, per-IP rate limiting, max body cap, `X-Request-ID`, and optional `TEACHER_TOKEN` auth on `/teacher/*`.
 
 ## Layout
-`pathshala/` core (`api`, `pipeline`, `retrieval`, `db`, `llm`, `embed`, `text`, `practice`, `clustering`) · `ingest/` · `eval/` · `mcp_server/` · `web/` · `prompts/` · `db/schema.sql` · `automation/n8n/` · `scripts/` · `tests/` · `docs/`
+`pathshala/` core (`api`, `pipeline`, `retrieval`, `db`, `llm`, `embed`, `text`, `practice`, `mastery`, `clustering`, `security`) · `ingest/` · `eval/` · `mcp_server/` · `web/` · `prompts/` · `db/schema.sql` · `automation/n8n/` · `scripts/` · `tests/`
 
 ## MCP Server (`nctb-corpus`)
 Custom FastMCP stdio server in `mcp_server/server.py` (config snippet in `mcp_server/mcp_config.snippet.json`). Run directly with `python -m mcp_server.server`.
@@ -77,7 +84,7 @@ Custom FastMCP stdio server in `mcp_server/server.py` (config snippet in `mcp_se
 - **Teacher Dashboard (`/teacher`):** Read-only without authentication for demo convenience; synthetic demo rows are explicitly flagged with `session_id='seed'` and separated from real queries in the UI.
 - **Honest Limitations:**
   - Source math/religion OCR contains noise; dataset chunks have **no page numbers**, so citations use class, subject, chapter, and `chunk_ref`.
-  - Scoped to **Primary Classes 1–5** (`7,081` chunks); contextualisation was kept OFF (`--no-ctx`, see `docs/DECISIONS.md` D9).
+  - Scoped to **Primary Classes 1–5** (`7,081` chunks); contextualisation was kept OFF (`--no-ctx`).
   - Automated `eval/run_eval.py` uses strict substring `keyword_recall >= 0.5`, which under-counts valid Bangla paraphrases.
 
 ## Data & Licence
