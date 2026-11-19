@@ -1,4 +1,6 @@
 """Anonymous session mastery tracking (EWMA per chapter, no PII)."""
+import csv
+import io
 from collections import defaultdict
 
 # session_id -> {(class_level, subject, chapter): {"mastery": float, "attempts": int, "correct": int}}
@@ -91,3 +93,22 @@ def get_aggregate_mastery() -> list[dict]:
 
 def clear_all():
     _SESSIONS.clear()
+
+
+def weak_chapters_csv() -> str:
+    """Export aggregated chapter mastery sorted weakest-first as CSV for teacher assignments."""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["class_level", "subject", "chapter", "avg_mastery", "sessions", "recommended_difficulty"])
+    for row in get_aggregate_mastery():
+        w.writerow(
+            [
+                row["class_level"],
+                row["subject"],
+                row["chapter"],
+                row["avg_mastery"],
+                row["sessions"],
+                row["difficulty"],
+            ]
+        )
+    return buf.getvalue()

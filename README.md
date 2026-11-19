@@ -87,6 +87,12 @@ Custom FastMCP stdio server in `mcp_server/server.py` (config snippet in `mcp_se
   - Scoped to **Primary Classes 1–5** (`7,081` chunks); contextualisation was kept OFF (`--no-ctx`).
   - Automated `eval/run_eval.py` uses strict substring `keyword_recall >= 0.5`, which under-counts valid Bangla paraphrases.
 
+## Roadmap (Planned — Classes 6–12 Expansion)
+*Not yet implemented in code; planned post-hackathon milestones:*
+- **Phase 1 (Classes 6–8):** Index the remaining `NCTB-SchoolText` middle-school chunks (~25k chunks) into the same `pgvector` schema with subject-level HNSW partitions.
+- **Phase 2 (Classes 9–12 / SSC & HSC):** Add math/physics LaTeX-aware chunking and diagram OCR for secondary/higher-secondary textbooks.
+- **Phase 3 (Distribution):** Full Telegram bot + low-bandwidth offline packs for rural schools.
+
 ## Data & Licence
 **Dataset:** Badar, Mir Hossain Ahmed, Pervaj Ahmed Tuhin. *NCTB-PrimaryText: A Curriculum-Aligned Textbook Chunk Dataset for Bangla and English Primary Education.* Mendeley Data, V1, 2026. DOI 10.17632/w3hj4m45d9.1. Licence CC BY 4.0 (https://data.mendeley.com/datasets/w3hj4m45d9/1). Not redistributed here.
 **Code:** MIT (`LICENSE`).

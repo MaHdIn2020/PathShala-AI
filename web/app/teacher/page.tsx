@@ -110,7 +110,14 @@ export default function TeacherPage() {
               শিক্ষার্থীদের প্রশ্ন, দুর্বল অধ্যায় ও প্রত্যাখ্যানের হার (কোনো ব্যক্তিগত তথ্য সংরক্ষিত নয়)
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <a
+              href={`${API_BASE}/teacher/export/weak-chapters.csv`}
+              download="weak_chapters.csv"
+              className="rounded-xl border border-[#00e5ff]/40 bg-[#00e5ff]/10 px-3.5 py-2 text-xs font-medium text-[#00e5ff] transition hover:bg-[#00e5ff]/20"
+            >
+              ⬇ CSV ডাউনলোড
+            </a>
             <button
               type="button"
               onClick={loadSummary}

@@ -5,7 +5,7 @@ import uuid
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import db, llm, mastery, pipeline, retrieval
@@ -303,6 +303,16 @@ def teacher_summary(limit: int = 50):
         data["refusal_rate"] = round(ref / tot, 4) if tot else 0.0
         data["helpful_rate"] = round(fb_up / fb_tot, 4) if fb_tot else None
     return data
+
+
+@app.get("/teacher/export/weak-chapters.csv")
+def teacher_export_weak_chapters():
+    """Download weak chapters CSV for teacher assignment planning."""
+    return PlainTextResponse(
+        content=mastery.weak_chapters_csv(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="weak_chapters.csv"'},
+    )
 
 
 @app.get("/teacher/clusters")

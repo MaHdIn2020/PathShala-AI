@@ -31,6 +31,10 @@ class TestMastery(unittest.TestCase):
         self.assertEqual(agg[0]["chapter"], "খাদ্যশৃঙ্খল")
         self.assertEqual(agg[0]["sessions"], 1)
 
+        csv_out = mastery.weak_chapters_csv()
+        self.assertIn("class_level,subject,chapter,avg_mastery,sessions,recommended_difficulty", csv_out)
+        self.assertIn("খাদ্যশৃঙ্খল", csv_out)
+
 
 if __name__ == "__main__":
     unittest.main()
