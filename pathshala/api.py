@@ -1,6 +1,8 @@
 """FastAPI app. Run: uvicorn pathshala.api:app --reload --port 8000"""
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import db, llm, pipeline, retrieval
@@ -54,6 +56,60 @@ def ask(req: AskReq):
         }
     )
     return res
+
+
+WARMUP_QUESTIONS = [
+    {"class_level": 5, "subject": "science", "question": "খাদ্যশৃঙ্খল কাকে বলে?"},
+    {"class_level": 5, "subject": "bangla", "question": "বাংলাদেশে বসবাসকারী ক্ষুদ্র নৃগোষ্ঠীর মাতৃভাষা কী কী?"},
+    {"class_level": 5, "subject": "bgs", "question": "লালবাগ কেল্লা কোথায় অবস্থিত?"},
+    {"class_level": 3, "subject": "bangla", "question": "আমাদের গ্রাম কবিতায় গ্রামের মানুষ কীভাবে থাকে?"},
+    {"class_level": 4, "subject": "science", "question": "উদ্ভিদ কীভাবে খাদ্য তৈরি করে?"},
+    {"class_level": 5, "subject": "science", "question": "বায়ুদূষণ কী?"},
+    {"class_level": 4, "subject": "bgs", "question": "বাংলাদেশের প্রধান নদীগুলোর নাম কী?"},
+    {"class_level": 3, "subject": "science", "question": "পানির তিনটি অবস্থা কী কী?"},
+]
+
+
+@app.post("/ask/stream")
+def ask_stream(req: AskReq):
+    """SSE endpoint: emits status immediately, then answer chunks and final JSON payload."""
+    def event_gen():
+        yield f"data: {json.dumps({'type': 'status', 'message': 'পাঠ্যবই খোঁজা হচ্ছে...'}, ensure_ascii=False)}\n\n"
+        res = pipeline.answer(req.question, req.class_level, req.subject)
+        res["query_id"] = db.log_query(
+            {
+                "session_id": req.session_id,
+                "class_level": req.class_level,
+                "subject": req.subject,
+                "question": req.question[:600],
+                "topic": res.get("topic"),
+                "top_score": res.get("top_score"),
+                "refused": res["refused"],
+                "reason": res.get("reason"),
+                "latency_ms": res["latency_ms"],
+                "cost_usd": res["cost_usd"],
+            }
+        )
+        ans = res.get("answer") or ""
+        step = max(24, len(ans) // 6) if ans else 24
+        for i in range(0, len(ans), step):
+            yield f"data: {json.dumps({'type': 'delta', 'text': ans[i : i + step]}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'payload': res}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+@app.post("/warmup")
+def warmup():
+    """Pre-warm in-memory answer cache with the 8 home-page sample questions."""
+    warmed = 0
+    for item in WARMUP_QUESTIONS:
+        try:
+            pipeline.answer(item["question"], item["class_level"], item["subject"])
+            warmed += 1
+        except Exception:
+            pass
+    return {"warmed": warmed, "total": len(WARMUP_QUESTIONS)}
 
 
 @app.post("/ask-image")

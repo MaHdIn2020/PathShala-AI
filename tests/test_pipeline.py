@@ -3,7 +3,15 @@ import unittest
 
 from pathshala import pipeline
 from pathshala.config import get_config
-from pathshala.pipeline import REFUSAL, SAFETY_MESSAGE, answer, clean_citations
+from pathshala.pipeline import (
+    REFUSAL,
+    SAFETY_MESSAGE,
+    answer,
+    clean_citations,
+    format_context,
+    should_rewrite,
+    should_skip_verify,
+)
 
 CHUNKS = [
     {"id": 7, "chunk_ref": "3-math-2-4", "text": "গতি হলো সময়ের সাথে অবস্থানের পরিবর্তন।", "chapter_no": 2, "chapter": "যোগ", "class_level": 3, "subject": "math", "page_start": None, "page_end": None, "book": "গণিত ৩", "sim": 0.8}
@@ -145,6 +153,23 @@ class TestPipeline(unittest.TestCase):
             self.assertEqual(r["reason"], "safety_distress")
             self.assertEqual(r["answer"], SAFETY_MESSAGE)
             self.assertEqual(called, [])
+
+    def test_should_rewrite_skips_short_subject_scoped_query(self):
+        self.assertFalse(should_rewrite("খাদ্যশৃঙ্খল কাকে বলে?", "science"))
+        self.assertTrue(should_rewrite("খাদ্যশৃঙ্খল কাকে বলে?", None))
+        self.assertTrue(should_rewrite("ক" * 50, "science"))
+
+    def test_should_skip_verify_only_on_high_score_with_citations(self):
+        self.assertTrue(should_skip_verify(0.90, [{"chunk_id": 7}]))
+        self.assertFalse(should_skip_verify(0.80, [{"chunk_id": 7}]))
+        self.assertFalse(should_skip_verify(0.95, []))
+
+    def test_format_context_caps_chunks_and_trims_text(self):
+        many = [{**CHUNKS[0], "id": i, "text": "ক" * 1200} for i in range(6)]
+        ctx = format_context(many)
+        self.assertIn("[3]", ctx)
+        self.assertNotIn("[4]", ctx)
+        self.assertLessEqual(len(ctx), 4000)
 
 
 if __name__ == "__main__":

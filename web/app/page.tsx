@@ -159,6 +159,7 @@ export default function Home() {
   const [subject, setSubject] = useState<string>("");
   const [question, setQuestion] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
+  const [streamPreview, setStreamPreview] = useState<string>("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [expandedCite, setExpandedCite] = useState<Record<string, number | null>>({});
   const [openPracticeKey, setOpenPracticeKey] = useState<string | null>(null);
@@ -230,20 +231,22 @@ export default function Home() {
     if (!cleanQ || loading) return;
 
     setLoading(true);
+    setStreamPreview("");
     setErrorMsg(null);
     setQuestion("");
 
     try {
+      const payload = JSON.stringify({
+        question: cleanQ,
+        class_level: Number(cls),
+        subject: subj.trim() || null,
+      });
       const res = await fetchWithRetry(
-        `${API_BASE}/ask`,
+        `${API_BASE}/ask/stream`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            question: cleanQ,
-            class_level: Number(cls),
-            subject: subj.trim() || null,
-          }),
+          body: payload,
         },
         25000,
         1
@@ -251,7 +254,39 @@ export default function Home() {
       if (!res.ok) {
         throw new Error(`HTTP_${res.status}`);
       }
-      const data: AnswerResponse = await res.json();
+      let data: AnswerResponse | null = null;
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("text/event-stream") && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n\n");
+          buf = parts.pop() || "";
+          for (const part of parts) {
+            const line = part.trim();
+            if (!line.startsWith("data:")) continue;
+            try {
+              const ev = JSON.parse(line.slice(5).trim());
+              if (ev.type === "delta" && typeof ev.text === "string") {
+                setStreamPreview((prev) => prev + ev.text);
+              } else if (ev.type === "done" && ev.payload) {
+                data = ev.payload as AnswerResponse;
+              }
+            } catch {
+              // ignore malformed SSE chunk
+            }
+          }
+        }
+      } else {
+        data = (await res.json()) as AnswerResponse;
+      }
+      if (!data) {
+        throw new Error("EMPTY_STREAM");
+      }
       setApiStatus("ready");
       turnSeqRef.current += 1;
       const id = `t-${turnSeqRef.current}`;
@@ -265,6 +300,7 @@ export default function Home() {
         setErrorMsg(DEFAULT_ERROR_MSG);
       }
     } finally {
+      setStreamPreview("");
       setLoading(false);
     }
   };
@@ -785,8 +821,8 @@ export default function Home() {
                   AI
                 </div>
                 <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-[#0d1117] px-4 py-3 text-sm text-slate-300">
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-[#00e5ff]" />
-                  <span>পাঠ্যবই খুঁজে উত্তর তৈরি হচ্ছে...</span>
+                  <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-[#00e5ff]" />
+                  <span>{streamPreview || "পাঠ্যবই খুঁজে উত্তর তৈরি হচ্ছে..."}</span>
                 </div>
               </div>
             )}

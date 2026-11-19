@@ -45,11 +45,22 @@ def load_prompt(name: str) -> str:
     return "\n".join(lines).strip()
 
 
-def format_context(chunks: list[dict], max_chars: int = 6000) -> str:
+def should_rewrite(query: str, subject: str | None, min_chars: int = 45) -> bool:
+    """Run query rewrite only when subject is unknown or the query is long."""
+    return (not subject) or (len(query.strip()) > min_chars)
+
+
+def should_skip_verify(top_score: float | None, cites: list[dict], threshold: float = 0.85) -> bool:
+    """Skip verifier LLM call when retrieval score is very high and citations are valid."""
+    return bool(cites) and top_score is not None and top_score >= threshold
+
+
+def format_context(chunks: list[dict], max_chars: int = 3600, max_chunks: int = 4, max_chunk_chars: int = 800) -> str:
     parts, used = [], 0
-    for c in chunks:
+    for c in chunks[:max_chunks]:
         head = f"[{c['id']}] (শ্রেণি {c.get('class_level', '-')}, {c.get('subject', '-')}, অধ্যায় {c.get('chapter_no', '-')}: {c.get('chapter') or '-'})"
-        body = f"{head}\n{c['text']}"
+        text = (c.get("text") or "")[:max_chunk_chars]
+        body = f"{head}\n{text}"
         if used + len(body) > max_chars and parts:
             break
         parts.append(body)
@@ -135,7 +146,7 @@ def build_graph(cfg, retrieve_fn, llm_fn):
         q = state["question"]
         query = q
         cost = state.get("cost", 0.0)
-        if cfg.rewrite:
+        if cfg.rewrite and should_rewrite(q, state.get("subject")):
             try:
                 obj, u = llm_fn(load_prompt("query_rewrite"), q, cfg.llm_fast_model, 300)
                 cost += u.get("cost", 0.0)
@@ -172,7 +183,7 @@ def build_graph(cfg, retrieve_fn, llm_fn):
         return {"cites": cites, "refused": False}
 
     def verify_node(state: PipelineState) -> dict:
-        if not cfg.verify:
+        if not cfg.verify or should_skip_verify(state.get("top_score"), state.get("cites") or []):
             return {"refused": False, "reason": None}
         cost = state.get("cost", 0.0)
         try:

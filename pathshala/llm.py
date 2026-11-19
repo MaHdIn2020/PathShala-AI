@@ -113,6 +113,8 @@ def chat_image_json(system: str, image_base64: str, mime_type: str, model: str, 
     image_url = f"data:{mime_type};base64,{image_base64}"
     r = litellm.completion(
         model=model,
+        timeout=20,
+        num_retries=0,
         messages=[
             {"role": "system", "content": system},
             {
