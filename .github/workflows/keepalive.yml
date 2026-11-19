@@ -1,0 +1,16 @@
+name: Keep API Awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        env:
+          API_URL: ${{ vars.API_URL || 'https://pathshala-ai-g087.onrender.com' }}
+        run: |
+          curl -fsS --max-time 30 --retry 1 --retry-delay 5 "${API_URL}/health"

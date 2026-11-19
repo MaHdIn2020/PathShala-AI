@@ -5,6 +5,35 @@ import { useEffect, useRef, useState } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+const DEFAULT_ERROR_MSG = "নেটওয়ার্ক বা সার্ভার ত্রুটি হয়েছে। কয়েক সেকেন্ড পর আবার চেষ্টা করুন।";
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  timeoutMs = 25000,
+  retries = 1
+): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok || (res.status >= 400 && res.status < 500) || attempt === retries) {
+        return res;
+      }
+      lastErr = new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      clearTimeout(timer);
+      lastErr = err;
+      if (attempt === retries) throw err;
+    }
+    await new Promise((r) => setTimeout(r, 1200));
+  }
+  throw lastErr;
+}
+
 interface Citation {
   chunk_id: number;
   chunk_ref?: string;
@@ -136,6 +165,7 @@ export default function Home() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isListening, setIsListening] = useState<boolean>(false);
   const [isOffline, setIsOffline] = useState<boolean>(false);
+  const [apiStatus, setApiStatus] = useState<"waking" | "ready" | "degraded">("waking");
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -176,6 +206,22 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    fetchWithRetry(`${API_BASE}/health`, { method: "GET" }, 15000, 1)
+      .then((res) => {
+        if (!active) return;
+        setApiStatus(res.ok ? "ready" : "degraded");
+      })
+      .catch(() => {
+        if (!active) return;
+        setApiStatus("degraded");
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns, loading]);
 
@@ -187,34 +233,38 @@ export default function Home() {
     setErrorMsg(null);
     setQuestion("");
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 35000);
     try {
-      const res = await fetch(`${API_BASE}/ask`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          question: cleanQ,
-          class_level: Number(cls),
-          subject: subj.trim() || null,
-        }),
-      });
+      const res = await fetchWithRetry(
+        `${API_BASE}/ask`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            question: cleanQ,
+            class_level: Number(cls),
+            subject: subj.trim() || null,
+          }),
+        },
+        25000,
+        1
+      );
       if (!res.ok) {
-        throw new Error(`সার্ভার ত্রুটি: ${res.statusText} (${res.status})`);
+        throw new Error(`HTTP_${res.status}`);
       }
       const data: AnswerResponse = await res.json();
+      setApiStatus("ready");
       turnSeqRef.current += 1;
       const id = `t-${turnSeqRef.current}`;
       setTurns((prev) => [...prev, { id, question: cleanQ, classLevel: cls, subject: subj, response: data }].slice(-20));
     } catch (err: unknown) {
       if (err instanceof Error && err.name === "AbortError") {
-        setErrorMsg("সার্ভার থেকে উত্তর আসতে বেশি সময় লাগছে (ফ্রি সার্ভার চালু হতে ৩০ সেকেন্ড লাগতে পারে)। আবার চেষ্টা করুন।");
+        setErrorMsg("সার্ভার থেকে উত্তর আসতে বেশি সময় লাগছে (ফ্রি সার্ভার চালু হতে কয়েক সেকেন্ড লাগতে পারে)। আবার চেষ্টা করুন।");
+      } else if (err instanceof Error && err.message.startsWith("HTTP_")) {
+        setErrorMsg("সার্ভার সাময়িকভাবে ব্যস্ত আছে। কয়েক সেকেন্ড পর আবার চেষ্টা করুন।");
       } else {
-        setErrorMsg(err instanceof Error ? err.message : "নেটওয়ার্ক বা সার্ভার ত্রুটি হয়েছে। আবার চেষ্টা করুন।");
+        setErrorMsg(DEFAULT_ERROR_MSG);
       }
     } finally {
-      clearTimeout(timer);
       setLoading(false);
     }
   };
@@ -469,6 +519,18 @@ export default function Home() {
         {isOffline && (
           <div role="alert" className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-center text-xs text-amber-200">
             ইন্টারনেট সংযোগ বিচ্ছিন্ন রয়েছে। নতুন প্রশ্ন করতে অনলাইনে আসুন—পূর্বের উত্তরগুলো নিচে দেখা যাবে।
+          </div>
+        )}
+
+        {!isOffline && apiStatus === "waking" && (
+          <div role="status" aria-live="polite" className="border-b border-[#00e5ff]/25 bg-[#00e5ff]/10 px-4 py-2 text-center text-xs text-[#a5f3fc]">
+            সার্ভার চালু হচ্ছে... প্রথমবার উত্তর আসতে কয়েক সেকেন্ড লাগতে পারে।
+          </div>
+        )}
+
+        {!isOffline && apiStatus === "degraded" && (
+          <div role="status" aria-live="polite" className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-center text-xs text-amber-200">
+            সার্ভার এখন জেগে উঠছে বা ব্যস্ত আছে—প্রশ্ন করলে স্বয়ংক্রিয়ভাবে আবার চেষ্টা করা হবে।
           </div>
         )}
 
@@ -731,7 +793,7 @@ export default function Home() {
 
             {errorMsg && (
               <div role="alert" className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-                {errorMsg}
+                {errorMsg.trim() || DEFAULT_ERROR_MSG}
               </div>
             )}
 
