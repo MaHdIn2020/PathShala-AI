@@ -19,7 +19,8 @@ eval/results*.json
 .gemini/
 GEMINI.md
 ANTIGRAVITY_MASTER_PROMPT.md
-docs/TASKS.md
+# Local-only docs/planning
+docs/
 docs/ANTIGRAVITY_GUIDE.md
 docs/SUBMISSION_MAP.md
 docs/VIDEO_SCRIPT.md
