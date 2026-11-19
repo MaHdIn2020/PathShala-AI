@@ -86,6 +86,8 @@ interface ChatTurn {
   feedbackSent?: boolean;
   practice?: PracticeResponse | null;
   practiceLoading?: boolean;
+  englishExplain?: string | null;
+  englishLoading?: boolean;
 }
 
 interface SpeechRecognitionEvent {
@@ -166,6 +168,7 @@ export default function Home() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isListening, setIsListening] = useState<boolean>(false);
   const [isOffline, setIsOffline] = useState<boolean>(false);
+  const [uiLang, setUiLang] = useState<"bn" | "en">("bn");
   const [apiStatus, setApiStatus] = useState<"waking" | "ready" | "degraded">("waking");
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [recommendedChapter, setRecommendedChapter] = useState<{
@@ -334,6 +337,25 @@ export default function Home() {
       setWeakCount((data?.mastery?.weak_chapters || []).length);
     } catch {
       // ignore offline attempt error
+    }
+  };
+
+  const handleExplainEnglish = async (turn: ChatTurn) => {
+    if (turn.englishLoading || turn.englishExplain) return;
+    setTurns((prev) => prev.map((t) => (t.id === turn.id ? { ...t, englishLoading: true } : t)));
+    try {
+      const res = await fetch(`${API_BASE}/explain-en`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: turn.question, answer: turn.response.answer }),
+      });
+      if (!res.ok) throw new Error("fail");
+      const data = await res.json();
+      setTurns((prev) =>
+        prev.map((t) => (t.id === turn.id ? { ...t, englishExplain: data.english || "", englishLoading: false } : t))
+      );
+    } catch {
+      setTurns((prev) => prev.map((t) => (t.id === turn.id ? { ...t, englishLoading: false } : t)));
     }
   };
 
@@ -576,12 +598,22 @@ export default function Home() {
               </span>
             </div>
           </div>
-          <Link
-            href="/teacher"
-            className="hidden rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs text-slate-300 transition hover:border-[#00e5ff]/40 hover:text-[#00e5ff] sm:inline-block"
-          >
-            শিক্ষক ড্যাশবোর্ড
-          </Link>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setUiLang((l) => (l === "bn" ? "en" : "bn"))}
+              aria-label="Toggle UI language"
+              className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 font-mono-code text-[11px] text-slate-200 transition hover:border-[#00e5ff]/40 hover:text-[#00e5ff]"
+            >
+              {uiLang === "bn" ? "EN" : "বাংলা"}
+            </button>
+            <Link
+              href="/teacher"
+              className="hidden rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs text-slate-300 transition hover:border-[#00e5ff]/40 hover:text-[#00e5ff] sm:inline-block"
+            >
+              {uiLang === "bn" ? "শিক্ষক ড্যাশবোর্ড" : "Teacher Dashboard"}
+            </Link>
+          </div>
         </header>
 
         {isOffline && (
@@ -620,11 +652,24 @@ export default function Home() {
                   NCTB Textbook Grounded Tutor
                 </div>
                 <h1 className="font-display text-3xl font-bold tracking-tight text-white md:text-5xl">
-                  আজ কী শিখতে চাও?
+                  {uiLang === "bn" ? "আজ কী শিখতে চাও?" : "What would you like to learn today?"}
                 </h1>
                 <p className="mt-3 max-w-xl text-sm leading-relaxed text-[#8b94a3] md:text-base">
-                  ১ম থেকে ৫ম শ্রেণির এনসিটিবি পাঠ্যবই থেকে যেকোনো প্রশ্ন করো—লিখে, মুখে বলে বা পাতার ছবি তুলে। প্রতিটি উত্তর আসবে অধ্যায়ের প্রমাণসহ।
+                  {uiLang === "bn"
+                    ? "১ম থেকে ৫ম শ্রেণির এনসিটিবি পাঠ্যবই থেকে যেকোনো প্রশ্ন করো—লিখে, মুখে বলে বা পাতার ছবি তুলে। প্রতিটি উত্তর আসবে অধ্যায়ের প্রমাণসহ।"
+                    : "Ask any question from NCTB Classes 1–5 textbooks by text, voice, or photo. Every answer is grounded with chapter citations—or an honest refusal if not in the book."}
                 </p>
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[11px] font-mono-code text-slate-300">
+                  <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1">
+                    7,081 NCTB chunks
+                  </span>
+                  <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-emerald-300">
+                    100% off-syllabus refusal (32/32)
+                  </span>
+                  <span className="rounded-full border border-[#00e5ff]/30 bg-[#00e5ff]/10 px-3 py-1 text-[#00e5ff]">
+                    71.6% citation · 69.0% acc (n=187)
+                  </span>
+                </div>
 
                 <div className="mt-8 grid w-full grid-cols-1 gap-3 sm:grid-cols-2">
                   {STARTER_PROMPTS.map((item, idx) => (
@@ -818,6 +863,15 @@ export default function Home() {
                               </div>
                             )}
 
+                            {turn.englishExplain && (
+                              <div className="rounded-xl border border-[#00e5ff]/25 bg-[#00e5ff]/5 p-3 text-xs leading-relaxed text-slate-200">
+                                <div className="mb-1 font-mono-code text-[10px] uppercase tracking-wider text-[#00e5ff]">
+                                  English Explanation (Same Grounded Context)
+                                </div>
+                                {turn.englishExplain}
+                              </div>
+                            )}
+
                             {/* Action Toolbar */}
                             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-3 text-xs text-slate-400">
                               <div className="flex flex-wrap items-center gap-2">
@@ -837,6 +891,15 @@ export default function Home() {
                                   className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 transition hover:border-[#00e5ff]/40 hover:text-[#00e5ff] disabled:opacity-50"
                                 >
                                   {turn.practiceLoading ? "তৈরি হচ্ছে..." : "📝 অনুশীলন"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleExplainEnglish(turn)}
+                                  disabled={turn.englishLoading || Boolean(turn.englishExplain)}
+                                  aria-label="Explain in English"
+                                  className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 transition hover:border-[#00e5ff]/40 hover:text-[#00e5ff] disabled:opacity-50"
+                                >
+                                  {turn.englishLoading ? "Translating..." : "🌐 Explain in English"}
                                 </button>
                                 <button
                                   type="button"

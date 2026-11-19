@@ -1,5 +1,18 @@
-# PathShala AI (পাঠশালা AI)
-Bangla tutor grounded in NCTB primary textbooks (Classes 1–5). Ask by text, voice, or photo → cited answer (`class · subject · chapter · chunk_ref` + expandable source snippet), or an honest refusal (`এই প্রশ্নের উত্তর পাঠ্যবইয়ে খুঁজে পাইনি।`).
+# PathShalaAI (পাঠশালা AI)
+
+[![CI](https://github.com/MaHdIn2020/PathShala-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/MaHdIn2020/PathShala-AI/actions/workflows/ci.yml)
+
+**30-Second Pitch:** PathShalaAI is a Bangla adaptive AI tutor grounded strictly in Bangladesh's NCTB primary textbooks (Classes 1–5, 7,081 indexed chunks). Students ask by text, voice, or textbook photo and receive step-by-step answers with verifiable chapter/chunk citations—or an honest refusal when the topic is not in the book. Includes adaptive EWMA chapter mastery, practice questions, a child-safety distress gate (`1098`), a teacher analytics dashboard, and a custom MCP server (`nctb-corpus`).
+
+- **Live Demo:** https://web-xi-peach-30.vercel.app (UI toggle: বাংলা / English)
+- **API Docs (Swagger):** https://pathshala-ai-g087.onrender.com/docs
+
+### Try These 3 Sample Questions
+| Class & Subject | Question | Expected Behavior |
+|---|---|---|
+| Class 5 · Science | `খাদ্যশৃঙ্খল কাকে বলে?` | Cited Bangla answer from Class 5 Science + expandable source snippet + optional English explanation |
+| Class 5 · BGS | `লালবাগ কেল্লা কোথায় অবস্থিত?` | Cited Bangla answer from Class 5 BGS with chapter & chunk reference |
+| Class 5 · Science (Off-syllabus) | `কোয়ান্টাম কম্পিউটার কীভাবে কাজ করে?` | Honest refusal (`এই প্রশ্নের উত্তর পাঠ্যবইয়ে খুঁজে পাইনি।`) — zero hallucinated citations |
 
 ## Quickstart
 1. Configure `.env` (`GEMINI_API_KEY`, `DATABASE_URL` with `pgvector`) and place the Mendeley dataset under `data/raw/mendeley/`.
