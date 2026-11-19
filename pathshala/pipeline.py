@@ -28,6 +28,10 @@ _DISTRESS_KEYWORDS = (
     "self harm",
     "self-harm",
     "want to die",
+    "more jete chai",
+    "bachte chai na",
+    "atmahatya",
+    "nijeke shesh",
 )
 _PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 _CACHE: dict = {}
@@ -43,6 +47,22 @@ def load_prompt(name: str) -> str:
     if lines and lines[0].startswith("# "):
         lines = lines[1:]
     return "\n".join(lines).strip()
+
+
+_SUBJECT_MIN_SCORE = {
+    "math": 0.42,
+    "english": 0.42,
+    "science": 0.45,
+    "bangla": 0.45,
+    "bgs": 0.45,
+}
+
+
+def subject_min_score(subject: str | None, default_score: float) -> float:
+    """Per-subject retrieval threshold (never below 0.35 to preserve 100% off-syllabus refusal)."""
+    if not subject:
+        return default_score
+    return max(0.35, _SUBJECT_MIN_SCORE.get(subject.strip().lower(), default_score))
 
 
 def should_rewrite(query: str, subject: str | None, min_chars: int = 45) -> bool:
@@ -159,7 +179,8 @@ def build_graph(cfg, retrieve_fn, llm_fn):
         chunks = retrieve_fn(state["query"], state["class_level"], state.get("subject"), cfg)
         top_score = max((c.get("sim", 0.0) for c in chunks), default=0.0)
         topic = chunks[0].get("chapter") if chunks else None
-        if not chunks or top_score < cfg.min_score:
+        threshold = subject_min_score(state.get("subject"), cfg.min_score)
+        if not chunks or top_score < threshold:
             return {"chunks": chunks, "top_score": top_score, "topic": topic, "refused": True, "reason": "low_retrieval"}
         ctx = format_context(chunks, cfg.max_context_chars)
         return {"chunks": chunks, "top_score": top_score, "topic": topic, "ctx": ctx, "refused": False}

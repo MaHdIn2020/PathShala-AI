@@ -108,6 +108,11 @@ def ask_stream(req: AskReq):
     def event_gen():
         yield f"data: {json.dumps({'type': 'status', 'message': 'পাঠ্যবই খোঁজা হচ্ছে...'}, ensure_ascii=False)}\n\n"
         res = pipeline.answer(req.question, req.class_level, req.subject)
+        cites = res.get("citations") or []
+        if cites and not res.get("refused"):
+            c0 = cites[0]
+            found_msg = f"পাওয়া গেছে: শ্রেণি {c0.get('class_level', req.class_level)} · {c0.get('subject') or ''} · অধ্যায় {c0.get('chapter_no') or '-'}"
+            yield f"data: {json.dumps({'type': 'status', 'message': found_msg}, ensure_ascii=False)}\n\n"
         res["query_id"] = db.log_query(
             {
                 "session_id": req.session_id,

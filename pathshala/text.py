@@ -20,6 +20,35 @@ def normalize_bangla(text: str, ascii_digits: bool = False) -> str:
     return t.strip()
 
 
+_SUBJECT_HINTS = {
+    "বিজ্ঞান": "science",
+    "science": "science",
+    "গণিত": "math",
+    "অঙ্ক": "math",
+    "math": "math",
+    "বাংলা": "bangla",
+    "bangla": "bangla",
+    "ইংরেজি": "english",
+    "english": "english",
+    "বিশ্বপরিচয়": "bgs",
+    "বিশ্বপরিচয়": "bgs",
+    "ইসলাম": "islam",
+}
+
+
+def normalize_query(text: str) -> tuple[str, str | None]:
+    """Normalize Bangla/ASCII digits & whitespace; also infer optional subject hint if mentioned."""
+    q = normalize_bangla(text, ascii_digits=True)
+    q = re.sub(r"[।?!,;:\"'()]+$", "", q).strip()
+    low = q.lower()
+    hint = None
+    for kw, slug in _SUBJECT_HINTS.items():
+        if kw in low:
+            hint = slug
+            break
+    return q, hint
+
+
 def _split_long(par: str, max_chars: int) -> list[str]:
     if len(par) <= max_chars:
         return [par]

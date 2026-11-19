@@ -43,14 +43,16 @@ def judge_prompt(question: str, answer: str, keywords) -> str:
     kw = ", ".join(str(k) for k in (keywords or []))
     return (
         "You are an impartial Bangla primary-school grader. "
-        "Decide if the student ANSWER correctly addresses the QUESTION using the expected key concepts "
-        "(valid Bangla paraphrases count as PASS). Reply JSON only: {\"verdict\": \"PASS\"|\"FAIL\"}.\n\n"
+        "Grade the student ANSWER against the QUESTION and EXPECTED CONCEPTS "
+        "(valid Bangla paraphrases count as correct). "
+        'Reply JSON only: {"verdict": "correct"|"partially"|"wrong", "cites_right_chunk": true|false}.\n\n'
         f"QUESTION: {question}\nEXPECTED CONCEPTS: {kw}\nANSWER: {answer}"
     )
 
 
 def parse_judge_verdict(obj: dict) -> bool:
-    return str((obj or {}).get("verdict", "")).strip().upper() == "PASS"
+    v = str((obj or {}).get("verdict", "")).strip().upper()
+    return v in ("PASS", "CORRECT")
 
 
 def score_item(item: dict, resp: dict, judge_fn=None) -> dict:
