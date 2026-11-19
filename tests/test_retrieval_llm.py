@@ -1,7 +1,7 @@
 import unittest
 
 from pathshala.llm import parse_json
-from pathshala.retrieval import rrf
+from pathshala.retrieval import fts_or_query, fts_terms, rrf
 
 
 class TestRRF(unittest.TestCase):
@@ -12,6 +12,10 @@ class TestRRF(unittest.TestCase):
 
     def test_top(self):
         self.assertEqual(len(rrf([[1, 2, 3]], top=2)), 2)
+
+    def test_fts_terms_strips_stopwords_and_builds_or_query(self):
+        self.assertEqual(fts_terms("খাদ্যশৃঙ্খল কাকে বলে?"), ["খাদ্যশৃঙ্খল"])
+        self.assertEqual(fts_or_query("How to bake a chocolate cake?"), "bake | chocolate | cake")
 
 
 class TestParseJson(unittest.TestCase):

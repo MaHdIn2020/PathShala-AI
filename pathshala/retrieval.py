@@ -1,6 +1,25 @@
 """Hybrid retrieval: pgvector cosine + Postgres FTS, fused with RRF. Optional cross-encoder rerank."""
-from .config import get_config
+import re
+
 from . import embed as _embed
+from .config import get_config
+
+_STOP = {
+    "কী", "কি", "কেন", "কীভাবে", "কিভাবে", "কাকে", "বলে", "হয়", "হয়", "করো", "বলো", "লেখো", "দাও", "কোন", "কত",
+    "the", "is", "are", "was", "were", "what", "how", "why", "who", "where", "when", "does", "do", "to", "a", "an", "in", "of",
+}
+
+
+def fts_terms(text: str) -> list[str]:
+    """Extract clean Bangla/English search terms for low-RAM FTS fallback."""
+    raw = [t for t in re.sub(r"[^\w\u0980-\u09FF]+", " ", (text or "").lower()).split() if len(t) >= 2]
+    filtered = [t for t in raw if t not in _STOP]
+    return list(dict.fromkeys(filtered or raw))[:10]
+
+
+def fts_or_query(text: str) -> str:
+    """Build a Postgres 'simple' OR tsquery string from clean terms."""
+    return " | ".join(fts_terms(text))
 
 
 def rrf(rank_lists, k: int = 60, top: int | None = None):
@@ -17,10 +36,43 @@ _COLS = "c.id, c.chunk_ref, c.text, c.contextual_text, c.chapter_no, c.chapter, 
 _FILTER = "t.class_level = %(cl)s and (%(subj)s::text is null or t.subject = %(subj)s)"
 
 
+def fts_search(question: str, class_level: int, subject: str | None, k: int = 30, cfg=None) -> list[dict]:
+    """Low-RAM Postgres FTS-only retrieval (used when EMBED_PROVIDER=fts, e.g. 512MB Render free tier)."""
+    from .db import get_conn
+
+    cfg = cfg or get_config()
+    terms = fts_terms(question)
+    tsq = " | ".join(terms)
+    if not tsq:
+        return []
+    p = {"cl": class_level, "subj": subject, "tsq": tsq, "k": k}
+    with get_conn(cfg) as c, c.cursor() as cur:
+        cur.execute(
+            f"""select {_COLS}, ts_rank(c.fts, to_tsquery('simple', %(tsq)s)) as rank
+                from chunks c join textbooks t on t.id=c.textbook_id
+                where {_FILTER} and c.fts @@ to_tsquery('simple', %(tsq)s)
+                order by rank desc limit %(k)s""",
+            p,
+        )
+        rows = cur.fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        hay = ((d.get("text") or "") + " " + (d.get("chapter") or "")).lower()
+        hits = sum(1 for t in terms if t in hay)
+        d["sim"] = min(0.95, round(0.35 + 0.60 * (hits / max(1, len(terms))), 4)) if hits else 0.0
+        d["rrf"] = float(d.pop("rank", 0.0) or 0.0)
+        out.append(d)
+    out.sort(key=lambda x: (-x["sim"], -x["rrf"]))
+    return out
+
+
 def hybrid_search(question: str, class_level: int, subject: str | None, k: int = 30, cfg=None, embed_fn=None):
     from .db import get_conn
 
     cfg = cfg or get_config()
+    if cfg.embed_provider == "fts" and embed_fn is None:
+        return fts_search(question, class_level, subject, k=k, cfg=cfg)
     qvec = _embed.to_pgvector((embed_fn or _embed.embed_query)(question))
     p = {"cl": class_level, "subj": subject, "q": question, "vec": qvec, "k": k}
     rows: dict = {}
