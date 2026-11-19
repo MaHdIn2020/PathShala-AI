@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import db, llm, pipeline, retrieval
+from . import db, llm, mastery, pipeline, retrieval
 from .config import get_config
 
 app = FastAPI(title="PathShala AI", version="0.1.0")
@@ -179,6 +179,27 @@ def practice(req: AskReq):
     return practice_mod.practice(req.question, req.class_level, req.subject)
 
 
+class PracticeAttemptReq(BaseModel):
+    session_id: str = Field(min_length=1, max_length=64)
+    class_level: int = Field(ge=1, le=12)
+    subject: str | None = None
+    chapter: str = Field(min_length=1, max_length=200)
+    correct: bool
+
+
+@app.post("/practice/attempt")
+def practice_attempt(req: PracticeAttemptReq):
+    """Update anonymous session EWMA mastery for a chapter after a practice answer."""
+    updated = mastery.record_attempt(req.session_id, req.class_level, req.subject or "general", req.chapter, req.correct)
+    snap = mastery.get_session_mastery(req.session_id)
+    return {"updated": updated, "mastery": snap}
+
+
+@app.get("/mastery")
+def get_mastery(session_id: str = "anon"):
+    return mastery.get_session_mastery(session_id)
+
+
 @app.post("/baseline")
 def baseline(req: AskReq):
     """Plain LLM, no retrieval. Used only by eval to show RAG gain."""
@@ -206,7 +227,10 @@ def teacher_topics(limit: int = 50):
 
 @app.get("/teacher/summary")
 def teacher_summary(limit: int = 50):
-    return db.teacher_summary(limit)
+    data = db.teacher_summary(limit)
+    if isinstance(data, dict):
+        data["adaptive_mastery"] = mastery.get_aggregate_mastery()
+    return data
 
 
 @app.get("/teacher/clusters")

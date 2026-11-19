@@ -168,11 +168,20 @@ export default function Home() {
   const [isOffline, setIsOffline] = useState<boolean>(false);
   const [apiStatus, setApiStatus] = useState<"waking" | "ready" | "degraded">("waking");
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+  const [recommendedChapter, setRecommendedChapter] = useState<{
+    chapter: string;
+    mastery: number;
+    difficulty: string;
+    class_level: number;
+    subject: string;
+  } | null>(null);
+  const [weakCount, setWeakCount] = useState<number>(0);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const turnSeqRef = useRef<number>(0);
+  const sessionIdRef = useRef<string>("anon-web");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -302,6 +311,29 @@ export default function Home() {
     } finally {
       setStreamPreview("");
       setLoading(false);
+    }
+  };
+
+  const recordPracticeAttempt = async (turn: ChatTurn, correct: boolean) => {
+    const chapter = turn.response.topic || turn.response.citations?.[0]?.chapter || "অধ্যায়";
+    try {
+      const res = await fetch(`${API_BASE}/practice/attempt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionIdRef.current,
+          class_level: turn.classLevel,
+          subject: turn.subject || "general",
+          chapter,
+          correct,
+        }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setRecommendedChapter(data?.mastery?.recommended_chapter || null);
+      setWeakCount((data?.mastery?.weak_chapters || []).length);
+    } catch {
+      // ignore offline attempt error
     }
   };
 
@@ -570,6 +602,14 @@ export default function Home() {
           </div>
         )}
 
+        {recommendedChapter && (
+          <div className="border-b border-[#00e5ff]/20 bg-[#0d1117] px-4 py-2 text-center text-xs text-slate-200">
+            পরবর্তী সুপারিশকৃত অধ্যায়: <span className="font-semibold text-[#00e5ff]">{recommendedChapter.chapter}</span>{" "}
+            (দক্ষতা {Math.round(recommendedChapter.mastery * 100)}% · ধাপ: {recommendedChapter.difficulty}
+            {weakCount > 0 ? ` · দুর্বল অধ্যায়: ${weakCount}` : ""})
+          </div>
+        )}
+
         {/* Scrollable Chat Thread */}
         <main className="flex-1 overflow-y-auto px-4 py-6">
           <div className="mx-auto max-w-3xl space-y-6">
@@ -750,9 +790,25 @@ export default function Home() {
                                             </button>
                                           </div>
                                           {isOpen && (
-                                            <p className="mt-2 rounded-lg border border-[#00e5ff]/25 bg-[#00e5ff]/10 p-2.5 text-xs text-slate-100">
-                                              {pq.a}
-                                            </p>
+                                            <div className="mt-2 space-y-2 rounded-lg border border-[#00e5ff]/25 bg-[#00e5ff]/10 p-2.5 text-xs text-slate-100">
+                                              <p>{pq.a}</p>
+                                              <div className="flex items-center gap-2 pt-1">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => recordPracticeAttempt(turn, true)}
+                                                  className="rounded border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-200 hover:bg-emerald-500/20"
+                                                >
+                                                  ✓ পেরেছি
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => recordPracticeAttempt(turn, false)}
+                                                  className="rounded border border-amber-400/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-200 hover:bg-amber-500/20"
+                                                >
+                                                  ✗ আবার শিখব
+                                                </button>
+                                              </div>
+                                            </div>
                                           )}
                                         </li>
                                       );
