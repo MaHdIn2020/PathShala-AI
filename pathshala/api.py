@@ -1,15 +1,41 @@
 """FastAPI app. Run: uvicorn pathshala.api:app --reload --port 8000"""
 import json
-from fastapi import FastAPI, HTTPException
+import os
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import db, llm, mastery, pipeline, retrieval
 from .config import get_config
+from .security import RateLimiter, allowed_origins, verify_teacher_token
 
 app = FastAPI(title="PathShala AI", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins(),
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+_RATE_LIMITER = RateLimiter(max_per_min=int(os.getenv("RATE_LIMIT_PER_MIN", "60")))
+_MAX_BODY_BYTES = int(os.getenv("MAX_BODY_BYTES", "3200000"))
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > _MAX_BODY_BYTES:
+        return JSONResponse({"detail": "Request body too large"}, status_code=413)
+    if request.url.path != "/health":
+        ip = request.client.host if request.client else "unknown"
+        if not _RATE_LIMITER.allow(ip):
+            return JSONResponse({"detail": "Too many requests"}, status_code=429)
+    if request.url.path.startswith("/teacher"):
+        tok = request.headers.get("x-teacher-token") or request.query_params.get("token")
+        if not verify_teacher_token(tok):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 class AskReq(BaseModel):
@@ -198,6 +224,23 @@ def practice_attempt(req: PracticeAttemptReq):
 @app.get("/mastery")
 def get_mastery(session_id: str = "anon"):
     return mastery.get_session_mastery(session_id)
+
+
+class ExplainEnReq(BaseModel):
+    answer: str = Field(min_length=1, max_length=4000)
+    question: str = Field(default="", max_length=600)
+
+
+@app.post("/explain-en")
+def explain_en(req: ExplainEnReq):
+    """Explain an already-grounded Bangla textbook answer in simple English without adding external facts."""
+    system = (
+        "Translate and explain the given Bangla primary-school textbook answer in simple, clear English. "
+        "Do NOT add any facts that are not in the provided Bangla answer. Keep it concise (2-4 sentences)."
+    )
+    user = f"QUESTION: {req.question}\nBANGLA ANSWER:\n{req.answer}"
+    text, usage = llm.chat_text(system, user, get_config().llm_fast_model, max_tokens=300)
+    return {"english": text, "cost_usd": usage.get("cost", 0.0)}
 
 
 @app.post("/baseline")
