@@ -141,6 +141,7 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const turnSeqRef = useRef<number>(0);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -203,7 +204,8 @@ export default function Home() {
         throw new Error(`সার্ভার ত্রুটি: ${res.statusText} (${res.status})`);
       }
       const data: AnswerResponse = await res.json();
-      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      turnSeqRef.current += 1;
+      const id = `t-${turnSeqRef.current}`;
       setTurns((prev) => [...prev, { id, question: cleanQ, classLevel: cls, subject: subj, response: data }].slice(-20));
     } catch (err: unknown) {
       if (err instanceof Error && err.name === "AbortError") {
@@ -275,7 +277,8 @@ export default function Home() {
           throw new Error(`সার্ভার ত্রুটি: ${res.statusText} (${res.status})`);
         }
         const data: AnswerResponse = await res.json();
-        const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        turnSeqRef.current += 1;
+        const id = `t-${turnSeqRef.current}`;
         const qText = data.transcribed_question || "📷 ছবির প্রশ্ন";
         setTurns((prev) => [...prev, { id, question: qText, classLevel, subject, response: data }].slice(-20));
       } catch (err: unknown) {
