@@ -36,23 +36,23 @@ def _cost(r) -> float:
 
 
 _FALLBACK_MODELS = (
-    "gemini/gemini-3-flash-preview",
     "gemini/gemini-flash-lite-latest",
+    "gemini/gemini-3-flash-preview",
     "gemini/gemini-3.1-flash-lite",
 )
 
 
 def _complete(model: str, **kwargs):
-    """Run litellm.completion with fallback on transient 503 / rate-limit errors."""
+    """Run litellm.completion with fast timeout and fallback on transient 503 / rate-limit errors."""
     litellm = _litellm()
     models = [model] + [m for m in _FALLBACK_MODELS if m != model]
     last_err = None
     for m in models:
         try:
-            return litellm.completion(model=m, **kwargs)
+            return litellm.completion(model=m, timeout=20, num_retries=0, **kwargs)
         except Exception as e:
             msg = str(e)
-            if any(code in msg or code in type(e).__name__ for code in ("503", "UNAVAILABLE", "ServiceUnavailable", "RateLimit", "429")):
+            if any(code in msg or code in type(e).__name__ for code in ("503", "UNAVAILABLE", "ServiceUnavailable", "RateLimit", "429", "Timeout", "timeout")):
                 last_err = e
                 continue
             raise

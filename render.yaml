@@ -10,15 +10,19 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: LLM_MODEL
-        value: gemini/gemini-3-flash-preview
+        value: gemini/gemini-flash-lite-latest
       - key: LLM_FAST_MODEL
-        value: gemini/gemini-3.5-flash-lite
+        value: gemini/gemini-flash-lite-latest
       - key: LLM_VERIFY_MODEL
-        value: gemini/gemini-3.1-flash-lite
+        value: gemini/gemini-flash-lite-latest
       - key: EMBED_PROVIDER
         value: fts
       - key: MIN_SCORE
         value: "0.45"
+      - key: REWRITE
+        value: "0"
+      - key: VERIFY
+        value: "0"
       - key: EMBED_MODEL
         value: BAAI/bge-m3
       - key: EMBED_DIM

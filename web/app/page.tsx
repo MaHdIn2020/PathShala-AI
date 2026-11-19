@@ -222,10 +222,13 @@ export default function Home() {
     setFeedbackSent(false);
     setExpandedCitation(null);
 
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 35000);
     try {
       const res = await fetch(`${API_BASE}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           question: qText,
           class_level: Number(classLevel),
@@ -241,10 +244,15 @@ export default function Home() {
       setResponse(data);
       cacheAnswer(qText, classLevel, subject, data);
     } catch (err: unknown) {
-      setErrorMsg(
-        err instanceof Error ? err.message : "নেটওয়ার্ক বা সার্ভার ত্রুটি হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
-      );
+      if (err instanceof Error && err.name === "AbortError") {
+        setErrorMsg("সার্ভার থেকে উত্তর আসতে বেশি সময় লাগছে (ফ্রি সার্ভার চালু হতে ৩০ সেকেন্ড লাগতে পারে)। অনুগ্রহ করে আবার চেষ্টা করুন।");
+      } else {
+        setErrorMsg(
+          err instanceof Error ? err.message : "নেটওয়ার্ক বা সার্ভার ত্রুটি হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
+        );
+      }
     } finally {
+      clearTimeout(timer);
       setLoading(false);
     }
   };
@@ -346,14 +354,23 @@ export default function Home() {
             <label htmlFor="subject-input" className="block text-sm font-medium text-slate-700 mb-1">
               বিষয় (ঐচ্ছিক):
             </label>
-            <input
+            <select
               id="subject-input"
-              type="text"
-              placeholder="যেমন: বাংলা, গণিত, বিজ্ঞান..."
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              className="w-full border border-slate-300 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500"
-            />
+              className="w-full border border-slate-300 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500 bg-white"
+            >
+              <option value="">সকল বিষয় (All Subjects)</option>
+              <option value="bangla">বাংলা (Bangla)</option>
+              <option value="math">গণিত (Math)</option>
+              <option value="science">বিজ্ঞান (Science)</option>
+              <option value="english">ইংরেজি (English)</option>
+              <option value="bgs">বাংলাদেশ ও বিশ্বপরিচয় (BGS)</option>
+              <option value="islam">ইসলাম ও নৈতিক শিক্ষা (Islam)</option>
+              <option value="hindu_religion">হিন্দুধর্ম ও নৈতিক শিক্ষা</option>
+              <option value="buddhist_religion">বৌদ্ধধর্ম ও নৈতিক শিক্ষা</option>
+              <option value="christian_religion">খ্রিস্টধর্ম ও নৈতিক শিক্ষা</option>
+            </select>
           </div>
         </div>
 
