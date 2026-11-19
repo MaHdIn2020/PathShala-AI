@@ -19,8 +19,14 @@ eval/results*.json
 .gemini/
 GEMINI.md
 ANTIGRAVITY_MASTER_PROMPT.md
-# Local-only docs/planning
-docs/
+# Local-only docs/planning (keep only public charts, screenshots, and reports)
+docs/*
+!docs/eval_chart.png
+!docs/screens/
+!docs/EVAL_REPORT.md
+!docs/RESPONSIBLE_AI.md
+!docs/BUSINESS.md
+!docs/ERROR_ANALYSIS.md
 docs/ANTIGRAVITY_GUIDE.md
 docs/SUBMISSION_MAP.md
 docs/VIDEO_SCRIPT.md

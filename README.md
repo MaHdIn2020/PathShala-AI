@@ -45,7 +45,7 @@ flowchart LR
 ```
 
 ## Evaluation (Measured on `n = 187` Golden Set)
-Evaluated with `make eval` on `eval/golden_set.jsonl` (`155` answerable across Classes 1–5 + `32` off-syllabus).
+Evaluated with `make eval` on `eval/golden_set.jsonl` (`155` answerable across Classes 1–5 + `32` off-syllabus). See [docs/EVAL_REPORT.md](docs/EVAL_REPORT.md), [docs/ERROR_ANALYSIS.md](docs/ERROR_ANALYSIS.md), [docs/RESPONSIBLE_AI.md](docs/RESPONSIBLE_AI.md), and [docs/BUSINESS.md](docs/BUSINESS.md).
 
 | Metric | RAG (`PathShalaAI`) | Baseline (`Plain LLM`) |
 |---|---:|---:|
@@ -55,6 +55,8 @@ Evaluated with `make eval` on `eval/golden_set.jsonl` (`155` answerable across C
 | **Refusal Accuracy** (`32` off-syllabus) | **100.0%** (`32/32`) | 37.5% (`12/32`) |
 | p95 Latency | 13,649 ms | 2,693 ms |
 | Mean Cost / Query | \$0.00078 | \$0.00006 |
+
+![RAG vs Baseline Evaluation Chart](docs/eval_chart.png)
 
 - **Red-Team Safety Check:** `PYTHONPATH=. python scripts/redteam.py` — **25/25 PASS** across distress (`1098`), jailbreak, prompt injection, adult, politics, medical, and off-syllabus prompts.
 - **Eval Hardening:** `eval/run_eval.py` supports deterministic 80/20 `dev/test` splits, 95% Wilson confidence intervals, and an optional `--judge` LLM grader alongside keyword recall.
