@@ -14,7 +14,21 @@ def keyword_recall(answer: str, keywords) -> float:
     return sum(1 for k in keywords if str(k).lower() in a) / len(keywords)
 
 
-def score_item(item: dict, resp: dict) -> dict:
+def judge_prompt(question: str, answer: str, keywords) -> str:
+    kw = ", ".join(str(k) for k in (keywords or []))
+    return (
+        "You are an impartial Bangla primary-school grader. "
+        "Decide if the student ANSWER correctly addresses the QUESTION using the expected key concepts "
+        "(valid Bangla paraphrases count as PASS). Reply JSON only: {\"verdict\": \"PASS\"|\"FAIL\"}.\n\n"
+        f"QUESTION: {question}\nEXPECTED CONCEPTS: {kw}\nANSWER: {answer}"
+    )
+
+
+def parse_judge_verdict(obj: dict) -> bool:
+    return str((obj or {}).get("verdict", "")).strip().upper() == "PASS"
+
+
+def score_item(item: dict, resp: dict, judge_fn=None) -> dict:
     refused = bool(resp.get("refused"))
     if item.get("answerable", True):
         correct = (not refused) and keyword_recall(resp.get("answer", ""), item.get("keywords", [])) >= 0.5
@@ -22,7 +36,10 @@ def score_item(item: dict, resp: dict) -> dict:
         chs = {c.get("chapter_no") for c in cites}
         refs = {c.get("chunk_ref") for c in cites}
         cite_ok = (not refused) and (bool(chs & set(item.get("gold_chapters", []))) or bool(refs & set(item.get("gold_refs", []))))
-        return {"id": item.get("id"), "answerable": True, "correct": correct, "cite_ok": cite_ok, "refused": refused}
+        row = {"id": item.get("id"), "answerable": True, "correct": correct, "cite_ok": cite_ok, "refused": refused}
+        if judge_fn is not None:
+            row["judge_ok"] = (not refused) and bool(judge_fn(item, resp))
+        return row
     return {"id": item.get("id"), "answerable": False, "refusal_ok": refused, "refused": refused}
 
 
@@ -37,7 +54,7 @@ def summarize(rows, latencies, costs) -> dict:
     ans = [r for r in rows if r["answerable"]]
     unans = [r for r in rows if not r["answerable"]]
     div = lambda a, b: (a / b) if b else None  # noqa: E731
-    return {
+    out = {
         "n": len(rows),
         "answer_accuracy": div(sum(r["correct"] for r in ans), len(ans)),
         "citation_correctness": div(sum(r["cite_ok"] for r in ans), len(ans)),
@@ -45,6 +62,10 @@ def summarize(rows, latencies, costs) -> dict:
         "p95_latency_ms": _p95(latencies),
         "mean_cost_usd": div(sum(costs), len(costs)),
     }
+    judged = [r for r in ans if "judge_ok" in r]
+    if judged:
+        out["llm_judge_accuracy"] = div(sum(r["judge_ok"] for r in judged), len(judged))
+    return out
 
 
 def _post(api: str, path: str, body: dict, timeout: int = 120) -> dict:
@@ -55,9 +76,27 @@ def _post(api: str, path: str, body: dict, timeout: int = 120) -> dict:
         return json.loads(r.read())
 
 
-def run(api: str, golden: str, baseline: bool) -> dict:
+def run(api: str, golden: str, baseline: bool, judge_model: str | None = None) -> dict:
     items = [json.loads(line) for line in open(golden, encoding="utf-8") if line.strip()]
     path = "/baseline" if baseline else "/ask"
+    judge_fn = None
+    if judge_model:
+        from pathshala import llm
+
+        def _judge(it, resp):
+            try:
+                obj, _ = llm.chat_json(
+                    "Return JSON only: {\"verdict\": \"PASS\"|\"FAIL\"}.",
+                    judge_prompt(it["question"], resp.get("answer", ""), it.get("keywords", [])),
+                    judge_model,
+                    100,
+                )
+                return parse_judge_verdict(obj)
+            except Exception:
+                return False
+
+        judge_fn = _judge
+
     rows, lat, cost = [], [], []
     for it in items:
         t = time.time()
@@ -67,7 +106,7 @@ def run(api: str, golden: str, baseline: bool) -> dict:
             resp = {"refused": True, "answer": "", "citations": [], "error": str(e)}
         lat.append(int((time.time() - t) * 1000))
         cost.append(float(resp.get("cost_usd") or 0.0))
-        rows.append(score_item(it, resp))
+        rows.append(score_item(it, resp, judge_fn=judge_fn))
     return {"mode": "baseline" if baseline else "rag", "summary": summarize(rows, lat, cost), "rows": rows}
 
 
@@ -77,7 +116,8 @@ if __name__ == "__main__":
     ap.add_argument("--golden", default="eval/golden_set.jsonl")
     ap.add_argument("--out", default="eval/results.json")
     ap.add_argument("--baseline", action="store_true")
+    ap.add_argument("--judge", default=None, help="Optional judge model (different from answerer)")
     a = ap.parse_args()
-    res = run(a.api, a.golden, a.baseline)
+    res = run(a.api, a.golden, a.baseline, judge_model=a.judge)
     json.dump(res, open(a.out, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     print(json.dumps(res["summary"], ensure_ascii=False, indent=2))
