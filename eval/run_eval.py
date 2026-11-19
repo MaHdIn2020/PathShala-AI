@@ -3,8 +3,33 @@
 golden row: {id, class_level, subject, question, answerable, keywords[], gold_chapters[] (chapter_no), gold_refs[] (chunk_ref, optional)}"""
 import argparse
 import json
+import math
+import random
 import time
 import urllib.request
+
+
+def split_dev_test(items: list[dict], test_ratio: float = 0.2, seed: int = 42) -> tuple[list[dict], list[dict]]:
+    """Deterministic dev/test split with fixed seed."""
+    idxs = list(range(len(items)))
+    rng = random.Random(seed)
+    rng.shuffle(idxs)
+    n_test = max(1, int(round(len(items) * test_ratio))) if items else 0
+    test_set = set(idxs[:n_test])
+    dev = [it for i, it in enumerate(items) if i not in test_set]
+    test = [it for i, it in enumerate(items) if i in test_set]
+    return dev, test
+
+
+def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float] | None:
+    """95% Wilson score confidence interval for proportion k/n."""
+    if n <= 0:
+        return None
+    p = k / n
+    denom = 1.0 + (z * z) / n
+    center = (p + (z * z) / (2.0 * n)) / denom
+    half = (z * math.sqrt((p * (1.0 - p) + (z * z) / (4.0 * n)) / n)) / denom
+    return (round(max(0.0, center - half), 4), round(min(1.0, center + half), 4))
 
 
 def keyword_recall(answer: str, keywords) -> float:

@@ -1,7 +1,7 @@
 import unittest
 
 from eval.error_analysis import classify_failure
-from eval.run_eval import judge_prompt, parse_judge_verdict, score_item, summarize
+from eval.run_eval import judge_prompt, parse_judge_verdict, score_item, split_dev_test, summarize, wilson_ci
 
 
 class TestEval(unittest.TestCase):
@@ -23,6 +23,17 @@ class TestEval(unittest.TestCase):
         self.assertTrue(row["judge_ok"])
         summary = summarize([row], [100], [0.001])
         self.assertEqual(summary["llm_judge_accuracy"], 1.0)
+
+    def test_split_dev_test_and_wilson_ci(self):
+        items = [{"id": str(i)} for i in range(20)]
+        dev, test = split_dev_test(items, test_ratio=0.2, seed=42)
+        self.assertEqual(len(dev), 16)
+        self.assertEqual(len(test), 4)
+        self.assertEqual(split_dev_test(items, test_ratio=0.2, seed=42)[1], test)
+        lo, hi = wilson_ci(14, 20)
+        self.assertLess(lo, 0.7)
+        self.assertGreater(hi, 0.7)
+        self.assertIsNone(wilson_ci(0, 0))
 
 
 if __name__ == "__main__":
