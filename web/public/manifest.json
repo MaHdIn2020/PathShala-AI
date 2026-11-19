@@ -1,6 +1,6 @@
 {
-  "name": "পাঠশালা এআই (PathShala AI)",
-  "short_name": "পাঠশালা AI",
+  "name": "PathShalaAI",
+  "short_name": "PathShalaAI",
   "description": "এনসিটিবি প্রাথমিক পাঠ্যবই ভিত্তিক বাংলা এআই গৃহশিক্ষক",
   "start_url": "/",
   "display": "standalone",

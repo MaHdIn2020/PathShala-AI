@@ -363,7 +363,7 @@ export default function Home() {
               পা
             </span>
             <div>
-              <div className="font-display text-sm font-bold tracking-tight text-white">PathShala AI</div>
+              <div className="font-display text-sm font-bold tracking-tight text-white">PathShalaAI</div>
               <div className="font-mono-code text-[10px] uppercase tracking-widest text-[#00e5ff]">
                 NCTB PRIMARY · 1–5
               </div>
@@ -452,7 +452,7 @@ export default function Home() {
               ☰
             </button>
             <div className="flex items-center gap-2">
-              <span className="font-display text-sm font-semibold text-white">পাঠশালা এআই</span>
+              <span className="font-display text-sm font-semibold text-white">PathShalaAI</span>
               <span className="rounded-full border border-[#00e5ff]/30 bg-[#00e5ff]/10 px-2.5 py-0.5 font-mono-code text-[11px] text-[#00e5ff]">
                 শ্রেণি {classLevel} · {subjectLabel}
               </span>

@@ -27,7 +27,7 @@ const notoBengali = Noto_Sans_Bengali({
 });
 
 export const metadata: Metadata = {
-  title: "পাঠশালা এআই (PathShala AI) — এনসিটিবি প্রাথমিক গৃহশিক্ষক",
+  title: "PathShalaAI — এনসিটিবি প্রাথমিক গৃহশিক্ষক",
   description: "এনসিটিবি প্রাথমিক শ্রেণি (১-৫) পাঠ্যবই ভিত্তিক নির্ভরযোগ্য বাংলা এআই গৃহশিক্ষক",
   manifest: "/manifest.json",
 };

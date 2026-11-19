@@ -101,7 +101,7 @@ export default function TeacherPage() {
         <header className="flex flex-col justify-between gap-4 border-b border-white/10 pb-5 sm:flex-row sm:items-center">
           <div>
             <div className="font-mono-code text-[11px] uppercase tracking-widest text-[#00e5ff]">
-              PATHSHALA AI · ANALYTICS
+              PATHSHALAAI · ANALYTICS
             </div>
             <h1 className="mt-1 font-display text-2xl font-bold tracking-tight text-white md:text-3xl">
               শিক্ষক বিশ্লেষণ ড্যাশবোর্ড
