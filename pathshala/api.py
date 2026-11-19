@@ -1,8 +1,10 @@
 """FastAPI app. Run: uvicorn pathshala.api:app --reload --port 8000"""
 import json
 import os
+import uuid
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -11,6 +13,7 @@ from .config import get_config
 from .security import RateLimiter, allowed_origins, verify_teacher_token
 
 app = FastAPI(title="PathShala AI", version="0.1.0")
+app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins(),
@@ -35,7 +38,10 @@ async def security_middleware(request: Request, call_next):
         tok = request.headers.get("x-teacher-token") or request.query_params.get("token")
         if not verify_teacher_token(tok):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
-    return await call_next(request)
+    req_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = req_id
+    return response
 
 
 class AskReq(BaseModel):
@@ -268,11 +274,34 @@ def teacher_topics(limit: int = 50):
     return db.topic_counts(limit)
 
 
+@app.post("/telegram/webhook")
+def telegram_webhook(update: dict):
+    """Lightweight Telegram bot webhook proof using the same grounded pipeline."""
+    msg = update.get("message") or {}
+    text = (msg.get("text") or "").strip()
+    chat_id = (msg.get("chat") or {}).get("id")
+    if not text:
+        return {"ok": True, "reply": ""}
+    res = pipeline.answer(text, class_level=5, subject=None)
+    reply = res.get("answer") or pipeline.REFUSAL
+    cites = res.get("citations") or []
+    if cites and not res.get("refused"):
+        c0 = cites[0]
+        reply += f"\n\n[উৎস: শ্রেণি {c0.get('class_level', 5)} · {c0.get('chapter') or c0.get('chunk_ref')}]"
+    return {"ok": True, "chat_id": chat_id, "reply": reply, "refused": bool(res.get("refused"))}
+
+
 @app.get("/teacher/summary")
 def teacher_summary(limit: int = 50):
     data = db.teacher_summary(limit)
     if isinstance(data, dict):
         data["adaptive_mastery"] = mastery.get_aggregate_mastery()
+        tot = int(data.get("total_queries") or 0)
+        ref = int(data.get("refused_queries") or 0)
+        fb_up = int(data.get("helpful_count") or 0)
+        fb_tot = int(data.get("feedback_count") or 0)
+        data["refusal_rate"] = round(ref / tot, 4) if tot else 0.0
+        data["helpful_rate"] = round(fb_up / fb_tot, 4) if fb_tot else None
     return data
 
 
