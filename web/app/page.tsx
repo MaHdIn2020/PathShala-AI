@@ -48,11 +48,15 @@ interface PracticeResponse {
   message?: string;
 }
 
-interface CachedEntry {
+interface ChatTurn {
+  id: string;
   question: string;
   classLevel: number;
   subject: string;
   response: AnswerResponse;
+  feedbackSent?: boolean;
+  practice?: PracticeResponse | null;
+  practiceLoading?: boolean;
 }
 
 interface SpeechRecognitionEvent {
@@ -81,24 +85,62 @@ interface IWindow extends Window {
   webkitSpeechRecognition?: new () => SpeechRecognitionInstance;
 }
 
+const SUBJECT_OPTIONS = [
+  { value: "", label: "সকল বিষয়" },
+  { value: "bangla", label: "বাংলা" },
+  { value: "math", label: "গণিত" },
+  { value: "science", label: "বিজ্ঞান" },
+  { value: "english", label: "ইংরেজি" },
+  { value: "bgs", label: "বাংলাদেশ ও বিশ্বপরিচয়" },
+  { value: "islam", label: "ইসলাম ও নৈতিক শিক্ষা" },
+  { value: "hindu_religion", label: "হিন্দুধর্ম ও নৈতিক শিক্ষা" },
+  { value: "buddhist_religion", label: "বৌদ্ধধর্ম ও নৈতিক শিক্ষা" },
+  { value: "christian_religion", label: "খ্রিস্টধর্ম ও নৈতিক শিক্ষা" },
+];
+
+const STARTER_PROMPTS = [
+  {
+    classLevel: 5,
+    subject: "science",
+    tag: "শ্রেণি ৫ · বিজ্ঞান",
+    question: "খাদ্যশৃঙ্খল কাকে বলে?",
+  },
+  {
+    classLevel: 5,
+    subject: "bangla",
+    tag: "শ্রেণি ৫ · বাংলা",
+    question: "বাংলাদেশে বসবাসকারী ক্ষুদ্র নৃগোষ্ঠীর মাতৃভাষা কী কী?",
+  },
+  {
+    classLevel: 5,
+    subject: "bgs",
+    tag: "শ্রেণি ৫ · বাবি",
+    question: "লালবাগ কেল্লা কোথায় অবস্থিত?",
+  },
+  {
+    classLevel: 3,
+    subject: "bangla",
+    tag: "শ্রেণি ৩ · বাংলা",
+    question: "আমাদের গ্রাম কবিতায় গ্রামের মানুষ কীভাবে থাকে?",
+  },
+];
+
 export default function Home() {
   const [classLevel, setClassLevel] = useState<number>(5);
   const [subject, setSubject] = useState<string>("");
   const [question, setQuestion] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
-  const [response, setResponse] = useState<AnswerResponse | null>(null);
-  const [expandedCitation, setExpandedCitation] = useState<number | null>(null);
-  const [feedbackSent, setFeedbackSent] = useState<boolean>(false);
+  const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [expandedCite, setExpandedCite] = useState<Record<string, number | null>>({});
+  const [openPracticeKey, setOpenPracticeKey] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isListening, setIsListening] = useState<boolean>(false);
   const [isOffline, setIsOffline] = useState<boolean>(false);
-  const [recentAnswers, setRecentAnswers] = useState<CachedEntry[]>([]);
-  const [practiceLoading, setPracticeLoading] = useState<boolean>(false);
-  const [practiceData, setPracticeData] = useState<PracticeResponse | null>(null);
-  const [openPracticeIdx, setOpenPracticeIdx] = useState<number | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -114,7 +156,6 @@ export default function Home() {
       recognition.lang = "bn-BD";
       recognition.continuous = false;
       recognition.interimResults = false;
-
       recognition.onresult = (event: SpeechRecognitionEvent) => {
         const transcript = event.results[0]?.[0]?.transcript;
         if (transcript) {
@@ -133,11 +174,59 @@ export default function Home() {
     };
   }, []);
 
-  const cacheAnswer = (qText: string, cls: number, subj: string, data: AnswerResponse) => {
-    setRecentAnswers((prev) => {
-      const filtered = prev.filter((item) => !(item.question === qText && item.classLevel === cls));
-      return [{ question: qText, classLevel: cls, subject: subj, response: data }, ...filtered].slice(0, 20);
-    });
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [turns, loading]);
+
+  const askQuestion = async (qText: string, cls: number, subj: string) => {
+    const cleanQ = qText.trim();
+    if (!cleanQ || loading) return;
+
+    setLoading(true);
+    setErrorMsg(null);
+    setQuestion("");
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 35000);
+    try {
+      const res = await fetch(`${API_BASE}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          question: cleanQ,
+          class_level: Number(cls),
+          subject: subj.trim() || null,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`সার্ভার ত্রুটি: ${res.statusText} (${res.status})`);
+      }
+      const data: AnswerResponse = await res.json();
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      setTurns((prev) => [...prev, { id, question: cleanQ, classLevel: cls, subject: subj, response: data }].slice(-20));
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") {
+        setErrorMsg("সার্ভার থেকে উত্তর আসতে বেশি সময় লাগছে (ফ্রি সার্ভার চালু হতে ৩০ সেকেন্ড লাগতে পারে)। আবার চেষ্টা করুন।");
+      } else {
+        setErrorMsg(err instanceof Error ? err.message : "নেটওয়ার্ক বা সার্ভার ত্রুটি হয়েছে। আবার চেষ্টা করুন।");
+      }
+    } finally {
+      clearTimeout(timer);
+      setLoading(false);
+    }
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    askQuestion(question, classLevel, subject);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      askQuestion(question, classLevel, subject);
+    }
   };
 
   const toggleListening = () => {
@@ -158,21 +247,16 @@ export default function Home() {
     }
   };
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     if (file.size > 2 * 1024 * 1024) {
       setErrorMsg("ছবির আকার ২ মেগাবাইট (2MB) এর চেয়ে ছোট হতে হবে।");
       return;
     }
 
     setLoading(true);
-    setResponse(null);
-    setPracticeData(null);
     setErrorMsg(null);
-    setFeedbackSent(false);
-
     const reader = new FileReader();
     reader.onload = async () => {
       try {
@@ -187,18 +271,13 @@ export default function Home() {
             subject: subject.trim() || null,
           }),
         });
-
         if (!res.ok) {
           throw new Error(`সার্ভার ত্রুটি: ${res.statusText} (${res.status})`);
         }
-
         const data: AnswerResponse = await res.json();
-        setResponse(data);
-        const qText = data.transcribed_question || question.trim();
-        if (data.transcribed_question) {
-          setQuestion(data.transcribed_question);
-        }
-        if (qText) cacheAnswer(qText, classLevel, subject, data);
+        const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const qText = data.transcribed_question || "📷 ছবির প্রশ্ন";
+        setTurns((prev) => [...prev, { id, question: qText, classLevel, subject, response: data }].slice(-20));
       } catch (err: unknown) {
         setErrorMsg(err instanceof Error ? err.message : "ছবি পাঠাতে সমস্যা হয়েছে। আবার চেষ্টা করুন।");
       } finally {
@@ -209,436 +288,546 @@ export default function Home() {
     reader.readAsDataURL(file);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const qText = question.trim();
-    if (!qText) return;
-
-    setLoading(true);
-    setResponse(null);
-    setPracticeData(null);
-    setOpenPracticeIdx(null);
-    setErrorMsg(null);
-    setFeedbackSent(false);
-    setExpandedCitation(null);
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 35000);
-    try {
-      const res = await fetch(`${API_BASE}/ask`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          question: qText,
-          class_level: Number(classLevel),
-          subject: subject.trim() || null,
-        }),
-      });
-
-      if (!res.ok) {
-        throw new Error(`সার্ভার ত্রুটি: ${res.statusText} (${res.status})`);
-      }
-
-      const data: AnswerResponse = await res.json();
-      setResponse(data);
-      cacheAnswer(qText, classLevel, subject, data);
-    } catch (err: unknown) {
-      if (err instanceof Error && err.name === "AbortError") {
-        setErrorMsg("সার্ভার থেকে উত্তর আসতে বেশি সময় লাগছে (ফ্রি সার্ভার চালু হতে ৩০ সেকেন্ড লাগতে পারে)। অনুগ্রহ করে আবার চেষ্টা করুন।");
-      } else {
-        setErrorMsg(
-          err instanceof Error ? err.message : "নেটওয়ার্ক বা সার্ভার ত্রুটি হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
-        );
-      }
-    } finally {
-      clearTimeout(timer);
-      setLoading(false);
-    }
-  };
-
-  const handlePractice = async () => {
-    const topicText = response?.topic || question.trim();
-    if (!topicText || practiceLoading) return;
-    setPracticeLoading(true);
-    setPracticeData(null);
-    setOpenPracticeIdx(null);
+  const handlePractice = async (turn: ChatTurn) => {
+    if (turn.practiceLoading) return;
+    setTurns((prev) => prev.map((t) => (t.id === turn.id ? { ...t, practiceLoading: true } : t)));
     try {
       const res = await fetch(`${API_BASE}/practice`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          question: topicText,
-          class_level: Number(classLevel),
-          subject: subject.trim() || null,
+          question: turn.response.topic || turn.question,
+          class_level: turn.classLevel,
+          subject: turn.subject.trim() || null,
         }),
       });
-      if (!res.ok) {
-        throw new Error(`অনুশীলন প্রশ্ন লোড করা যায়নি (${res.status})`);
-      }
+      if (!res.ok) throw new Error(`অনুশীলন প্রশ্ন লোড করা যায়নি (${res.status})`);
       const data: PracticeResponse = await res.json();
-      setPracticeData(data);
+      setTurns((prev) =>
+        prev.map((t) => (t.id === turn.id ? { ...t, practice: data, practiceLoading: false } : t))
+      );
     } catch (err: unknown) {
       setErrorMsg(err instanceof Error ? err.message : "অনুশীলন প্রশ্ন আনতে সমস্যা হয়েছে।");
-    } finally {
-      setPracticeLoading(false);
+      setTurns((prev) => prev.map((t) => (t.id === turn.id ? { ...t, practiceLoading: false } : t)));
     }
   };
 
-  const handleFeedback = async (helpful: boolean) => {
-    if (!response?.query_id || feedbackSent) return;
+  const handleFeedback = async (turn: ChatTurn, helpful: boolean) => {
+    if (!turn.response.query_id || turn.feedbackSent) return;
+    setTurns((prev) => prev.map((t) => (t.id === turn.id ? { ...t, feedbackSent: true } : t)));
     try {
       await fetch(`${API_BASE}/feedback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query_id: response.query_id,
-          helpful,
-        }),
+        body: JSON.stringify({ query_id: turn.response.query_id, helpful }),
       });
-      setFeedbackSent(true);
     } catch {
       // best-effort feedback
     }
   };
 
-  const handleSpeech = () => {
-    if (!response?.answer || typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  const handleSpeech = (text: string) => {
+    if (!text || typeof window === "undefined" || !("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(response.answer);
+    const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = "bn-BD";
     window.speechSynthesis.speak(utterance);
   };
 
+  const subjectLabel = SUBJECT_OPTIONS.find((s) => s.value === subject)?.label || "সকল বিষয়";
+
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-800 p-4 md:p-8 max-w-4xl mx-auto">
-      <header className="mb-6 text-center">
-        <h1 className="text-3xl font-bold text-emerald-700">পাঠশালা এআই (PathShala AI)</h1>
-        <p className="text-slate-600 mt-1">জাতীয় শিক্ষাক্রম ও পাঠ্যপুস্তক বোর্ড (NCTB) ভিত্তিক নির্ভরযোগ্য গৃহশিক্ষক</p>
-        <nav aria-label="প্রধান নেভিগেশন" className="mt-3 flex justify-center gap-2">
+    <div className="flex h-screen w-full overflow-hidden bg-[#08080d] text-[#eef2f3]">
+      {/* Mobile Sidebar Backdrop */}
+      {sidebarOpen && (
+        <button
+          type="button"
+          aria-label="সাইডবার বন্ধ করুন"
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 z-30 bg-black/60 backdrop-blur-xs md:hidden"
+        />
+      )}
+
+      {/* Left Sidebar (ChatGPT / Claude Style) */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-white/10 bg-[#0d1117] transition-transform duration-200 md:static md:translate-x-0 ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <div className="flex items-center justify-between border-b border-white/10 px-4 py-4">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#00e5ff]/40 bg-[#00e5ff]/10 font-display text-sm font-bold text-[#00e5ff]">
+              পা
+            </span>
+            <div>
+              <div className="font-display text-sm font-bold tracking-tight text-white">PathShala AI</div>
+              <div className="font-mono-code text-[10px] uppercase tracking-widest text-[#00e5ff]">
+                NCTB PRIMARY · 1–5
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="মেনু বন্ধ করুন"
+            className="rounded-lg p-1.5 text-slate-400 hover:bg-white/5 hover:text-white md:hidden"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="p-3">
+          <button
+            type="button"
+            onClick={() => {
+              setTurns([]);
+              setErrorMsg(null);
+              setSidebarOpen(false);
+            }}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-[#00e5ff]/35 bg-[#00e5ff]/10 px-3 py-2.5 text-sm font-medium text-[#00e5ff] transition hover:bg-[#00e5ff]/20"
+          >
+            <span>＋</span> নতুন আলোচনা
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-3 py-2">
+          <div className="mb-2 px-2 font-mono-code text-[10px] uppercase tracking-widest text-slate-500">
+            সাম্প্রতিক প্রশ্ন ({turns.length})
+          </div>
+          {turns.length === 0 ? (
+            <p className="px-2 text-xs text-slate-500">তোমার করা প্রশ্নগুলো এখানে দেখা যাবে।</p>
+          ) : (
+            <ul className="space-y-1">
+              {[...turns].reverse().map((t) => (
+                <li key={t.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      document.getElementById(`turn-${t.id}`)?.scrollIntoView({ behavior: "smooth" });
+                      setSidebarOpen(false);
+                    }}
+                    className="w-full truncate rounded-lg px-2.5 py-2 text-left text-xs text-slate-300 transition hover:bg-white/5 hover:text-white"
+                  >
+                    <span className="mr-1.5 font-mono-code text-[10px] text-[#00e5ff]">C{t.classLevel}</span>
+                    {t.question}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="border-t border-white/10 p-3 space-y-2">
           <Link
             href="/teacher"
-            className="inline-block text-xs px-3 py-1.5 rounded-full border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 font-medium"
+            className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 text-xs font-medium text-slate-200 transition hover:border-[#00e5ff]/40 hover:bg-[#00e5ff]/10 hover:text-[#00e5ff]"
           >
-            📊 শিক্ষক ড্যাশবোর্ড
+            <span>📊 শিক্ষক ড্যাশবোর্ড</span>
+            <span className="font-mono-code text-[10px] text-slate-400">→</span>
           </Link>
-        </nav>
-      </header>
-
-      {isOffline && (
-        <div role="alert" className="bg-amber-50 border border-amber-300 text-amber-900 p-3 rounded-lg mb-4 text-sm">
-          ইন্টারনেট সংযোগ বিচ্ছিন্ন রয়েছে। নতুন প্রশ্ন করতে অনলাইনে আসুন—তবে নিচে থাকা সাম্প্রতিক উত্তরগুলো দেখতে পারবেন।
-        </div>
-      )}
-
-      <form onSubmit={handleSubmit} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 mb-6">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-          <div>
-            <label htmlFor="class-select" className="block text-sm font-medium text-slate-700 mb-1">
-              শ্রেণি (১-৫):
-            </label>
-            <select
-              id="class-select"
-              value={classLevel}
-              onChange={(e) => setClassLevel(Number(e.target.value))}
-              className="w-full border border-slate-300 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500 bg-white"
-            >
-              {[1, 2, 3, 4, 5].map((c) => (
-                <option key={c} value={c}>
-                  শ্রেণি {c}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label htmlFor="subject-input" className="block text-sm font-medium text-slate-700 mb-1">
-              বিষয় (ঐচ্ছিক):
-            </label>
-            <select
-              id="subject-input"
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              className="w-full border border-slate-300 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500 bg-white"
-            >
-              <option value="">সকল বিষয় (All Subjects)</option>
-              <option value="bangla">বাংলা (Bangla)</option>
-              <option value="math">গণিত (Math)</option>
-              <option value="science">বিজ্ঞান (Science)</option>
-              <option value="english">ইংরেজি (English)</option>
-              <option value="bgs">বাংলাদেশ ও বিশ্বপরিচয় (BGS)</option>
-              <option value="islam">ইসলাম ও নৈতিক শিক্ষা (Islam)</option>
-              <option value="hindu_religion">হিন্দুধর্ম ও নৈতিক শিক্ষা</option>
-              <option value="buddhist_religion">বৌদ্ধধর্ম ও নৈতিক শিক্ষা</option>
-              <option value="christian_religion">খ্রিস্টধর্ম ও নৈতিক শিক্ষা</option>
-            </select>
+          <div className="flex items-center justify-between px-2 font-mono-code text-[10px] text-slate-500">
+            <span className="flex items-center gap-1.5">
+              <span className={`h-1.5 w-1.5 rounded-full ${isOffline ? "bg-amber-400" : "bg-[#00e5ff]"}`} />
+              {isOffline ? "OFFLINE" : "GROUNDED RAG"}
+            </span>
+            <span>CC BY 4.0</span>
           </div>
         </div>
+      </aside>
 
-        <div className="mb-4">
-          <div className="flex justify-between items-center mb-1 gap-2 flex-wrap">
-            <label htmlFor="question-input" className="block text-sm font-medium text-slate-700">
-              তোমার প্রশ্ন লিখো বা ছবি তোলো:
-            </label>
+      {/* Main Chat Area */}
+      <div className="ambient-glow flex flex-1 flex-col overflow-hidden">
+        {/* Top Header Bar */}
+        <header className="flex items-center justify-between border-b border-white/10 bg-[#08080d]/80 px-4 py-3 backdrop-blur-md">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="সাইডবার খুলুন"
+              className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-sm text-slate-200 hover:bg-white/10 md:hidden"
+            >
+              ☰
+            </button>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={toggleListening}
-                aria-label="মুখে প্রশ্ন বলুন"
-                aria-pressed={isListening}
-                className={`text-xs px-2.5 py-1 rounded-full border transition flex items-center gap-1 ${
-                  isListening
-                    ? "bg-rose-100 text-rose-700 border-rose-300 animate-pulse font-medium"
-                    : "bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200"
-                }`}
-              >
-                🎤 {isListening ? "শুনছি..." : "মুখে বলো"}
-              </button>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                aria-label="পাঠ্যবইয়ের প্রশ্নের ছবি আপলোড করুন"
-                className="text-xs px-2.5 py-1 rounded-full border border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1"
-              >
-                📷 ছবি আপলোড
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                capture="environment"
-                onChange={handleImageUpload}
-                aria-label="প্রশ্নের ছবি ফাইল নির্বাচন করুন"
-                className="hidden"
-              />
+              <span className="font-display text-sm font-semibold text-white">পাঠশালা এআই</span>
+              <span className="rounded-full border border-[#00e5ff]/30 bg-[#00e5ff]/10 px-2.5 py-0.5 font-mono-code text-[11px] text-[#00e5ff]">
+                শ্রেণি {classLevel} · {subjectLabel}
+              </span>
             </div>
           </div>
+          <Link
+            href="/teacher"
+            className="hidden rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs text-slate-300 transition hover:border-[#00e5ff]/40 hover:text-[#00e5ff] sm:inline-block"
+          >
+            শিক্ষক ড্যাশবোর্ড
+          </Link>
+        </header>
 
-          <textarea
-            id="question-input"
-            rows={3}
-            placeholder="পাঠ্যবই থেকে যেকোনো প্রশ্ন জিজ্ঞাসা করো অথবা পাতার ছবি তোলো..."
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            className="w-full border border-slate-300 rounded-lg p-3 focus:ring-2 focus:ring-emerald-500"
-            required
-          />
-        </div>
+        {isOffline && (
+          <div role="alert" className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-center text-xs text-amber-200">
+            ইন্টারনেট সংযোগ বিচ্ছিন্ন রয়েছে। নতুন প্রশ্ন করতে অনলাইনে আসুন—পূর্বের উত্তরগুলো নিচে দেখা যাবে।
+          </div>
+        )}
 
-        <button
-          type="submit"
-          disabled={loading || !question.trim()}
-          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-3 px-4 rounded-lg transition disabled:opacity-50"
-        >
-          {loading ? "উত্তর খোঁজা হচ্ছে..." : "উত্তর জানাও"}
-        </button>
-      </form>
+        {/* Scrollable Chat Thread */}
+        <main className="flex-1 overflow-y-auto px-4 py-6">
+          <div className="mx-auto max-w-3xl space-y-6">
+            {turns.length === 0 && !loading ? (
+              <div className="flex flex-col items-center justify-center py-10 text-center md:py-16">
+                <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-[#00e5ff]/30 bg-[#00e5ff]/10 px-3.5 py-1 font-mono-code text-[11px] uppercase tracking-widest text-[#00e5ff]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-[#00e5ff]" />
+                  NCTB Textbook Grounded Tutor
+                </div>
+                <h1 className="font-display text-3xl font-bold tracking-tight text-white md:text-5xl">
+                  আজ কী শিখতে চাও?
+                </h1>
+                <p className="mt-3 max-w-xl text-sm leading-relaxed text-[#8b94a3] md:text-base">
+                  ১ম থেকে ৫ম শ্রেণির এনসিটিবি পাঠ্যবই থেকে যেকোনো প্রশ্ন করো—লিখে, মুখে বলে বা পাতার ছবি তুলে। প্রতিটি উত্তর আসবে অধ্যায়ের প্রমাণসহ।
+                </p>
 
-      {errorMsg && (
-        <div role="alert" className="bg-red-50 border border-red-200 text-red-700 p-4 rounded-lg mb-6">
-          {errorMsg}
-        </div>
-      )}
-
-      {loading && (
-        <div aria-busy="true" aria-live="polite" className="bg-white p-6 rounded-xl border border-slate-200 animate-pulse space-y-4">
-          <div className="h-4 bg-slate-200 rounded w-1/4"></div>
-          <div className="h-4 bg-slate-200 rounded w-3/4"></div>
-          <div className="h-4 bg-slate-200 rounded w-1/2"></div>
-        </div>
-      )}
-
-      {response && (
-        <section aria-live="polite" className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 space-y-4">
-          {response.reason === "safety_distress" ? (
-            <div role="alert" className="p-4 bg-sky-50 border border-sky-300 rounded-lg space-y-2">
-              <h2 className="font-semibold text-sky-900 text-lg">আমরা তোমার পাশে আছি</h2>
-              <p className="text-sky-900 leading-relaxed">{response.answer}</p>
-            </div>
-          ) : response.refused ? (
-            <div role="status" className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
-              <h2 className="font-semibold text-amber-800 text-lg mb-1">পাঠ্যবইয়ে পাওয়া যায়নি</h2>
-              <p className="text-amber-700">
-                {response.answer || "এই প্রশ্নের উত্তর পাঠ্যবইয়ে খুঁজে পাইনি।"}
-              </p>
-              <p className="text-sm text-amber-600 mt-2">
-                পরামর্শ: প্রশ্নের বানান ঠিক করে বা নির্দিষ্ট অধ্যায়ের নাম উল্লেখ করে পুনরায় জিজ্ঞাসা করো।
-              </p>
-            </div>
-          ) : (
-            <>
-              <div className="flex flex-wrap justify-between items-center gap-2">
-                <h2 className="text-lg font-semibold text-slate-800">উত্তর:</h2>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handlePractice}
-                    disabled={practiceLoading}
-                    aria-label="এই অধ্যায় থেকে অনুশীলন প্রশ্ন তৈরি করুন"
-                    className="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-800 py-1 px-3 rounded-full border border-emerald-300 disabled:opacity-50"
-                  >
-                    {practiceLoading ? "প্রশ্ন তৈরি হচ্ছে..." : "📝 অনুশীলন"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSpeech}
-                    aria-label="উত্তর পড়ে শোনান"
-                    title="উচ্চারণ শোনো"
-                    className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 py-1 px-3 rounded-full border border-slate-300"
-                  >
-                    🔊 পড়ে শোনাও
-                  </button>
+                <div className="mt-8 grid w-full grid-cols-1 gap-3 sm:grid-cols-2">
+                  {STARTER_PROMPTS.map((item, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => {
+                        setClassLevel(item.classLevel);
+                        setSubject(item.subject);
+                        askQuestion(item.question, item.classLevel, item.subject);
+                      }}
+                      className="group rounded-2xl border border-white/10 bg-[#0d1117]/90 p-4 text-left transition hover:border-[#00e5ff]/50 hover:bg-[#111827]"
+                    >
+                      <div className="mb-1.5 font-mono-code text-[10px] uppercase tracking-wider text-[#00e5ff]">
+                        {item.tag}
+                      </div>
+                      <div className="text-sm font-medium text-slate-200 group-hover:text-white">
+                        {item.question}
+                      </div>
+                    </button>
+                  ))}
                 </div>
               </div>
-
-              <div className="text-slate-800 leading-relaxed whitespace-pre-line text-base">
-                {response.answer}
-              </div>
-
-              {response.steps && response.steps.length > 0 && (
-                <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
-                  <h3 className="text-sm font-semibold text-slate-700 mb-2">ধাপসমূহ:</h3>
-                  <ol className="list-decimal list-inside space-y-1 text-sm text-slate-600">
-                    {response.steps.map((st, i) => (
-                      <li key={i}>{st}</li>
-                    ))}
-                  </ol>
-                </div>
-              )}
-
-              {response.citations && response.citations.length > 0 && (
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-700 mb-2">উৎস ও প্রমাণ (পাঠ্যবইয়ের অংশ):</h3>
-                  <div className="flex flex-wrap gap-2">
-                    {response.citations.map((c) => (
-                      <button
-                        key={c.chunk_id}
-                        type="button"
-                        aria-expanded={expandedCitation === c.chunk_id}
-                        onClick={() =>
-                          setExpandedCitation(expandedCitation === c.chunk_id ? null : c.chunk_id)
-                        }
-                        className={`text-xs px-3 py-1.5 rounded-full border transition ${
-                          expandedCitation === c.chunk_id
-                            ? "bg-emerald-100 border-emerald-400 text-emerald-800 font-medium"
-                            : "bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700"
-                        }`}
-                      >
-                        {c.class_level ? `শ্রেণি ${c.class_level}` : ""}
-                        {c.subject ? ` · ${c.subject}` : ""}
-                        {c.chapter_no ? ` · অধ্যায় ${c.chapter_no}` : ""}
-                        {c.chapter ? `: ${c.chapter}` : ""}
-                        {c.chunk_ref ? ` (${c.chunk_ref})` : ""}
-                      </button>
-                    ))}
-                  </div>
-
-                  {expandedCitation !== null && (
-                    <div className="mt-3 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-slate-700">
-                      <span className="font-semibold text-emerald-800 block mb-1">পাঠ্যবইয়ের সংশ্লিষ্ট অংশ:</span>
-                      <p className="whitespace-pre-line">
-                        {response.citations.find((c) => c.chunk_id === expandedCitation)?.snippet ||
-                          "উদ্ধৃতি পাওয়া যায়নি"}
-                      </p>
+            ) : (
+              turns.map((turn) => {
+                const resp = turn.response;
+                const activeCiteId = expandedCite[turn.id] ?? null;
+                return (
+                  <article key={turn.id} id={`turn-${turn.id}`} className="space-y-4">
+                    {/* User Bubble */}
+                    <div className="flex justify-end">
+                      <div className="max-w-[85%] rounded-2xl rounded-tr-sm border border-white/10 bg-[#161d2b] px-4 py-3 text-sm text-white shadow-sm">
+                        <div className="mb-1 font-mono-code text-[10px] text-[#00e5ff]">
+                          শ্রেণি {turn.classLevel}
+                          {turn.subject ? ` · ${turn.subject}` : ""}
+                        </div>
+                        <p className="whitespace-pre-line leading-relaxed">{turn.question}</p>
+                      </div>
                     </div>
-                  )}
-                </div>
-              )}
 
-              {practiceData && (
-                <div className="mt-3 p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
-                  <h3 className="text-sm font-semibold text-slate-800">অনুশীলন প্রশ্ন</h3>
-                  {practiceData.refused || practiceData.questions.length === 0 ? (
-                    <p className="text-xs text-slate-600">
-                      {practiceData.message || "এই বিষয়ে অনুশীলন প্রশ্ন তৈরি করা যায়নি।"}
-                    </p>
-                  ) : (
-                    <ol className="space-y-2 text-sm">
-                      {practiceData.questions.map((pq, i) => (
-                        <li key={i} className="bg-white p-3 rounded-lg border border-slate-200">
-                          <div className="font-medium text-slate-800">
-                            {i + 1}. {pq.q}
+                    {/* Assistant Response */}
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-[#00e5ff]/40 bg-[#00e5ff]/10 font-display text-xs font-bold text-[#00e5ff]">
+                        AI
+                      </div>
+
+                      <div className="min-w-0 flex-1 space-y-3 rounded-2xl border border-white/10 bg-[#0d1117] p-4 md:p-5">
+                        {resp.reason === "safety_distress" ? (
+                          <div role="alert" className="rounded-xl border border-sky-400/40 bg-sky-500/10 p-4 text-sky-100">
+                            <h2 className="mb-1 text-base font-semibold text-sky-300">আমরা তোমার পাশে আছি</h2>
+                            <p className="text-sm leading-relaxed">{resp.answer}</p>
                           </div>
-                          <div className="mt-1 flex items-center justify-between text-xs text-slate-500">
-                            <span>উৎস: {pq.chunk_ref || `#${pq.chunk_id}`}</span>
-                            <button
-                              type="button"
-                              onClick={() => setOpenPracticeIdx(openPracticeIdx === i ? null : i)}
-                              className="text-emerald-700 hover:underline font-medium"
-                            >
-                              {openPracticeIdx === i ? "উত্তর লুকাও" : "উত্তর দেখো"}
-                            </button>
-                          </div>
-                          {openPracticeIdx === i && (
-                            <p className="mt-2 text-xs text-slate-700 bg-emerald-50 p-2 rounded border border-emerald-200">
-                              {pq.a}
+                        ) : resp.refused ? (
+                          <div role="status" className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-4">
+                            <div className="mb-1 font-display text-sm font-semibold text-amber-300">
+                              পাঠ্যবইয়ে পাওয়া যায়নি
+                            </div>
+                            <p className="text-sm text-amber-100/90">
+                              {resp.answer || "এই প্রশ্নের উত্তর পাঠ্যবইয়ে খুঁজে পাইনি।"}
                             </p>
-                          )}
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </div>
-              )}
+                            <p className="mt-2 text-xs text-amber-200/70">
+                              পরামর্শ: সঠিক শ্রেণি ও বিষয় নির্বাচন করে বা অধ্যায়ের মূল শব্দ দিয়ে পুনরায় জিজ্ঞাসা করো।
+                            </p>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="whitespace-pre-line text-[15px] leading-7 text-[#eef2f3]">
+                              {resp.answer}
+                            </div>
 
-              <div className="pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
-                <div className="flex items-center gap-2">
-                  <span>সহায়ক ছিল?</span>
-                  <button
-                    type="button"
-                    aria-label="হ্যাঁ, উত্তরটি সহায়ক ছিল"
-                    onClick={() => handleFeedback(true)}
-                    disabled={feedbackSent}
-                    className="hover:text-emerald-600 disabled:opacity-50"
-                  >
-                    👍 হ্যাঁ
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="না, উত্তরটি সহায়ক ছিল না"
-                    onClick={() => handleFeedback(false)}
-                    disabled={feedbackSent}
-                    className="hover:text-rose-600 disabled:opacity-50"
-                  >
-                    👎 না
-                  </button>
-                  {feedbackSent && <span className="text-emerald-600 font-medium ml-1">ধন্যবাদ!</span>}
-                </div>
+                            {resp.steps && resp.steps.length > 0 && (
+                              <div className="rounded-xl border border-white/10 bg-[#08080d]/70 p-3.5">
+                                <div className="mb-2 font-mono-code text-[11px] uppercase tracking-wider text-[#00e5ff]">
+                                  ধাপসমূহ (Steps)
+                                </div>
+                                <ol className="list-inside list-decimal space-y-1.5 text-sm text-slate-300">
+                                  {resp.steps.map((st, i) => (
+                                    <li key={i}>{st}</li>
+                                  ))}
+                                </ol>
+                              </div>
+                            )}
 
-                <span>সময়: {response.latency_ms}ms</span>
+                            {resp.citations && resp.citations.length > 0 && (
+                              <div className="pt-1">
+                                <div className="mb-2 font-mono-code text-[10px] uppercase tracking-widest text-slate-400">
+                                  উৎস ও প্রমাণ (Citations)
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  {resp.citations.map((c) => {
+                                    const isOpen = activeCiteId === c.chunk_id;
+                                    return (
+                                      <button
+                                        key={c.chunk_id}
+                                        type="button"
+                                        aria-expanded={isOpen}
+                                        onClick={() =>
+                                          setExpandedCite((prev) => ({
+                                            ...prev,
+                                            [turn.id]: isOpen ? null : c.chunk_id,
+                                          }))
+                                        }
+                                        className={`rounded-full border px-3 py-1 font-mono-code text-[11px] transition ${
+                                          isOpen
+                                            ? "border-[#00e5ff] bg-[#00e5ff]/15 text-[#00e5ff]"
+                                            : "border-white/15 bg-white/[0.03] text-slate-300 hover:border-[#00e5ff]/50 hover:text-white"
+                                        }`}
+                                      >
+                                        {c.class_level ? `শ্রেণি ${c.class_level}` : ""}
+                                        {c.subject ? ` · ${c.subject}` : ""}
+                                        {c.chapter_no ? ` · অধ্যায় ${c.chapter_no}` : ""}
+                                        {c.chapter ? `: ${c.chapter}` : ""}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+
+                                {activeCiteId !== null && (
+                                  <div className="mt-3 rounded-xl border border-[#00e5ff]/30 bg-[#00e5ff]/[0.06] p-3.5 text-xs text-slate-200">
+                                    <div className="mb-1 font-mono-code text-[10px] uppercase tracking-wider text-[#00e5ff]">
+                                      পাঠ্যবইয়ের মূল অংশ (
+                                      {resp.citations.find((c) => c.chunk_id === activeCiteId)?.chunk_ref || `#${activeCiteId}`}
+                                      )
+                                    </div>
+                                    <p className="whitespace-pre-line leading-relaxed text-slate-200">
+                                      {resp.citations.find((c) => c.chunk_id === activeCiteId)?.snippet || "উদ্ধৃতি পাওয়া যায়নি"}
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Practice Section */}
+                            {turn.practice && (
+                              <div className="mt-3 space-y-2.5 rounded-xl border border-white/10 bg-[#08080d]/80 p-4">
+                                <div className="font-mono-code text-[11px] uppercase tracking-wider text-[#00e5ff]">
+                                  অনুশীলন প্রশ্ন (Practice)
+                                </div>
+                                {turn.practice.refused || turn.practice.questions.length === 0 ? (
+                                  <p className="text-xs text-slate-400">
+                                    {turn.practice.message || "এই বিষয়ে অনুশীলন প্রশ্ন তৈরি করা যায়নি।"}
+                                  </p>
+                                ) : (
+                                  <ol className="space-y-2 text-sm">
+                                    {turn.practice.questions.map((pq, idx) => {
+                                      const key = `${turn.id}-${idx}`;
+                                      const isOpen = openPracticeKey === key;
+                                      return (
+                                        <li key={key} className="rounded-lg border border-white/10 bg-[#0d1117] p-3">
+                                          <div className="font-medium text-slate-100">
+                                            {idx + 1}. {pq.q}
+                                          </div>
+                                          <div className="mt-1.5 flex items-center justify-between text-xs text-slate-400">
+                                            <span className="font-mono-code text-[10px]">
+                                              উৎস: {pq.chunk_ref || `#${pq.chunk_id}`}
+                                            </span>
+                                            <button
+                                              type="button"
+                                              onClick={() => setOpenPracticeKey(isOpen ? null : key)}
+                                              className="font-medium text-[#00e5ff] hover:underline"
+                                            >
+                                              {isOpen ? "উত্তর লুকাও" : "উত্তর দেখো"}
+                                            </button>
+                                          </div>
+                                          {isOpen && (
+                                            <p className="mt-2 rounded-lg border border-[#00e5ff]/25 bg-[#00e5ff]/10 p-2.5 text-xs text-slate-100">
+                                              {pq.a}
+                                            </p>
+                                          )}
+                                        </li>
+                                      );
+                                    })}
+                                  </ol>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Action Toolbar */}
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-3 text-xs text-slate-400">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleSpeech(resp.answer)}
+                                  aria-label="উত্তর পড়ে শোনান"
+                                  className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 transition hover:border-[#00e5ff]/40 hover:text-white"
+                                >
+                                  🔊 শোনো
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handlePractice(turn)}
+                                  disabled={turn.practiceLoading}
+                                  aria-label="অনুশীলন প্রশ্ন তৈরি করুন"
+                                  className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 transition hover:border-[#00e5ff]/40 hover:text-[#00e5ff] disabled:opacity-50"
+                                >
+                                  {turn.practiceLoading ? "তৈরি হচ্ছে..." : "📝 অনুশীলন"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleFeedback(turn, true)}
+                                  disabled={turn.feedbackSent}
+                                  aria-label="উত্তরটি সহায়ক ছিল"
+                                  className="rounded-lg px-2 py-1 transition hover:bg-white/5 hover:text-[#00e5ff] disabled:opacity-40"
+                                >
+                                  👍
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleFeedback(turn, false)}
+                                  disabled={turn.feedbackSent}
+                                  aria-label="উত্তরটি সহায়ক ছিল না"
+                                  className="rounded-lg px-2 py-1 transition hover:bg-white/5 hover:text-rose-400 disabled:opacity-40"
+                                >
+                                  👎
+                                </button>
+                                {turn.feedbackSent && <span className="text-[#00e5ff]">ধন্যবাদ!</span>}
+                              </div>
+                              <span className="font-mono-code text-[11px] text-slate-500">
+                                {resp.latency_ms}ms
+                              </span>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </article>
+                );
+              })
+            )}
+
+            {loading && (
+              <div aria-busy="true" aria-live="polite" className="flex items-start gap-3">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-[#00e5ff]/40 bg-[#00e5ff]/10 font-display text-xs font-bold text-[#00e5ff]">
+                  AI
+                </div>
+                <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-[#0d1117] px-4 py-3 text-sm text-slate-300">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-[#00e5ff]" />
+                  <span>পাঠ্যবই খুঁজে উত্তর তৈরি হচ্ছে...</span>
+                </div>
               </div>
-            </>
-          )}
-        </section>
-      )}
+            )}
 
-      {recentAnswers.length > 0 && (
-        <section aria-label="সাম্প্রতিক প্রশ্ন ও উত্তর" className="mt-6 bg-white p-4 rounded-xl border border-slate-200">
-          <h2 className="text-xs font-semibold text-slate-600 mb-2">সাম্প্রতিক প্রশ্ন (এই সেশনে সংরক্ষিত):</h2>
-          <div className="flex flex-wrap gap-2">
-            {recentAnswers.map((entry, idx) => (
-              <button
-                key={`${entry.classLevel}-${idx}`}
-                type="button"
-                onClick={() => {
-                  setClassLevel(entry.classLevel);
-                  setSubject(entry.subject);
-                  setQuestion(entry.question);
-                  setResponse(entry.response);
-                  setPracticeData(null);
-                  setExpandedCitation(null);
-                }}
-                className="text-xs px-2.5 py-1 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 truncate max-w-xs"
-              >
-                শ্রেণি {entry.classLevel}: {entry.question}
-              </button>
-            ))}
+            {errorMsg && (
+              <div role="alert" className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                {errorMsg}
+              </div>
+            )}
+
+            <div ref={bottomRef} />
           </div>
-        </section>
-      )}
+        </main>
 
-      <footer className="mt-8 text-center text-xs text-slate-500">
-        সতর্কতা: এআই ভুল করতে পারে — এনসিটিবি পাঠ্যবই-ই চূড়ান্ত কর্তৃপক্ষ। কোনো ব্যক্তিগত তথ্য বা ছবি সংরক্ষণ করা হয় না।
-      </footer>
-    </main>
+        {/* Floating Chat Composer */}
+        <div className="border-t border-white/10 bg-[#08080d]/90 px-4 pb-4 pt-3 backdrop-blur-md">
+          <form onSubmit={handleSubmit} className="mx-auto max-w-3xl">
+            <div className="rounded-2xl border border-white/15 bg-[#0d1117] p-2.5 shadow-lg transition focus-within:border-[#00e5ff]/60">
+              <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-white/5 pb-2">
+                <select
+                  aria-label="শ্রেণি নির্বাচন করুন"
+                  value={classLevel}
+                  onChange={(e) => setClassLevel(Number(e.target.value))}
+                  className="rounded-lg border border-white/10 bg-[#111827] px-2.5 py-1 text-xs font-medium text-slate-200 focus:border-[#00e5ff] focus:outline-none"
+                >
+                  {[1, 2, 3, 4, 5].map((c) => (
+                    <option key={c} value={c}>
+                      শ্রেণি {c}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label="বিষয় নির্বাচন করুন"
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  className="rounded-lg border border-white/10 bg-[#111827] px-2.5 py-1 text-xs font-medium text-slate-200 focus:border-[#00e5ff] focus:outline-none"
+                >
+                  {SUBJECT_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-end gap-2">
+                <textarea
+                  id="question-input"
+                  rows={2}
+                  placeholder="পাঠ্যবই থেকে যেকোনো প্রশ্ন লিখো... (Enter চাপলে উত্তর আসবে)"
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  className="max-h-40 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none"
+                />
+
+                <div className="flex items-center gap-1.5 pb-1">
+                  <button
+                    type="button"
+                    onClick={toggleListening}
+                    aria-label="মুখে প্রশ্ন বলুন"
+                    aria-pressed={isListening}
+                    title="মুখে বলো (বাংলা)"
+                    className={`rounded-xl border px-2.5 py-2 text-xs transition ${
+                      isListening
+                        ? "animate-pulse border-rose-400 bg-rose-500/20 text-rose-200"
+                        : "border-white/10 bg-white/[0.04] text-slate-300 hover:border-[#00e5ff]/40 hover:text-white"
+                    }`}
+                  >
+                    🎤
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    aria-label="প্রশ্নের ছবি আপলোড করুন"
+                    title="ছবি আপলোড"
+                    className="rounded-xl border border-white/10 bg-white/[0.04] px-2.5 py-2 text-xs text-slate-300 transition hover:border-[#00e5ff]/40 hover:text-white"
+                  >
+                    📷
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={handleImageUpload}
+                    aria-label="প্রশ্নের ছবি ফাইল নির্বাচন করুন"
+                    className="hidden"
+                  />
+                  <button
+                    type="submit"
+                    disabled={loading || !question.trim()}
+                    aria-label="প্রশ্ন পাঠান"
+                    className="rounded-xl bg-[#00e5ff] px-4 py-2 font-display text-xs font-bold text-[#001318] transition hover:bg-[#33ecff] disabled:opacity-40"
+                  >
+                    পাঠাও ↑
+                  </button>
+                </div>
+              </div>
+            </div>
+            <p className="mt-2 text-center font-mono-code text-[10px] text-slate-500">
+              এআই ভুল করতে পারে — এনসিটিবি পাঠ্যবই-ই চূড়ান্ত কর্তৃপক্ষ · কোনো ব্যক্তিগত তথ্য বা ছবি সংরক্ষিত হয় না
+            </p>
+          </form>
+        </div>
+      </div>
+    </div>
   );
 }
