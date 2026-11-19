@@ -21,7 +21,7 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install fastapi uvicorn pydantic langgraph litellm psycopg ruff httpx
+          .venv/bin/pip install fastapi uvicorn pydantic langgraph litellm psycopg ruff httpx mcp matplotlib scikit-learn numpy
       - name: Install web deps
         run: npm --prefix web ci
       - name: Run verify.sh
