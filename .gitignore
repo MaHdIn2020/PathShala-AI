@@ -20,6 +20,7 @@ eval/results*.json
 .gemini/
 GEMINI.md
 ANTIGRAVITY_MASTER_PROMPT.md
+prompts/PathShalaAI_Antigravity_Master_Prompt.md
 # Local-only docs/planning (keep only public charts, screenshots, and reports)
 docs/*
 !docs/eval_chart.png
@@ -28,6 +29,11 @@ docs/*
 !docs/RESPONSIBLE_AI.md
 !docs/BUSINESS.md
 !docs/ERROR_ANALYSIS.md
+!docs/ANTIGRAVITY_AUDIT.md
+!docs/ARCHITECTURE.md
+!docs/DECISIONS.md
+!docs/DATA_REPORT.md
+!docs/DEMO_SCRIPT.md
 docs/ANTIGRAVITY_GUIDE.md
 docs/SUBMISSION_MAP.md
 docs/VIDEO_SCRIPT.md
