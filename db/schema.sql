@@ -4,24 +4,29 @@ create extension if not exists vector;
 create table if not exists textbooks (
   id serial primary key,
   title text not null,
+  curriculum_id text not null default 'nctb',
+  textbook_medium text not null default 'bangla_version' check (textbook_medium in ('bangla_version', 'english_version', 'unknown')),
+  edition_year int default 2024,
   class_level int not null check (class_level between 1 and 12),
   subject text not null,
   source_url text,
+  source_license text default 'CC BY 4.0',
   sha256 text,
   parser_version text,
   source text,  -- e.g. 'NCTB-PrimaryText (Mendeley, CC BY 4.0)'
   created_at timestamptz default now(),
-  unique (class_level, subject)
+  unique (curriculum_id, textbook_medium, class_level, subject)
 );
+create index if not exists textbooks_identity_idx on textbooks (curriculum_id, textbook_medium, class_level, subject);
 
 create table if not exists chunks (
   id bigserial primary key,
   textbook_id int not null references textbooks(id) on delete cascade,
-  chunk_ref text unique,   -- dataset chunk_id: <class>-<subject>-<chapter_no>-<chunk_index>
+  chunk_ref text unique,   -- dataset chunk_id (prefixed with en- for English Version)
   chapter_no int,
   chapter text,            -- chapter title
-  page_start int,          -- NULL for the Mendeley dataset (it has no page numbers)
-  page_end int,
+  page_start int,          -- chapter start page from chapters_config when available
+  page_end int,            -- chapter end page from chapters_config when available
   text text not null,
   contextual_text text,
   embedding vector(1024),
@@ -31,10 +36,14 @@ create table if not exists chunks (
 create index if not exists chunks_emb_idx on chunks using hnsw (embedding vector_cosine_ops);
 create index if not exists chunks_fts_idx on chunks using gin (fts);
 create index if not exists chunks_book_idx on chunks (textbook_id);
+create index if not exists chunks_book_chapter_idx on chunks (textbook_id, chapter_no);
 
 create table if not exists queries (
   id bigserial primary key,
   session_id text,
+  curriculum_id text default 'nctb',
+  textbook_medium text default 'bangla_version',
+  answer_language text default 'bn',
   class_level int,
   subject text,
   question text,

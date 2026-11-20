@@ -1,6 +1,7 @@
 """Grounded tutor pipeline: rewrite -> retrieve -> gate -> answer -> citation check -> verify -> respond.
-Dependencies are injectable (retrieve_fn / llm_fn) so tests run without DB or network."""
+Strictly isolates textbook_medium from answer_language. Dependencies are injectable for offline tests."""
 import hashlib
+import re
 import time
 from pathlib import Path
 from typing import TypedDict
@@ -11,6 +12,15 @@ from .config import get_config
 from .text import normalize_bangla
 
 REFUSAL = "এই প্রশ্নের উত্তর পাঠ্যবইয়ে খুঁজে পাইনি।"
+REFUSAL_EN = "I could not find the answer to this question in the selected textbook."
+UNAVAILABLE_BN = (
+    "নির্বাচিত কারিকুলাম, পাঠ্যবইয়ের মাধ্যম, শ্রেণি বা বিষয়টি বর্তমানে ডেটাবেসে সংরক্ষিত নেই। "
+    "অনুগ্রহ করে উপলব্ধ পাঠ্যবই নির্বাচন করুন।"
+)
+UNAVAILABLE_EN = (
+    "The selected curriculum, textbook version, class, or subject is not currently loaded. "
+    "Please choose an available textbook combination."
+)
 SAFETY_MESSAGE = (
     "তোমার কথা শুনে মনে হচ্ছে তুমি খুব কঠিন সময় পার করছ। তুমি একা নও—অনুগ্রহ করে এখনই মা-বাবা, শিক্ষক বা "
     "পরিবারের কোনো বিশ্বস্ত বড় মানুষের সাথে কথা বলো। জরুরি সহায়তার জন্য শিশু সহায়তা হেল্পলাইন ১০৯৮ (1098) "
@@ -35,6 +45,11 @@ _DISTRESS_KEYWORDS = (
 )
 _PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 _CACHE: dict = {}
+_HAS_BN = re.compile(r"[\u0980-\u09FF]")
+
+
+def refusal_text(answer_language: str = "bn") -> str:
+    return REFUSAL_EN if answer_language == "en" else REFUSAL
 
 
 def is_distress_query(text: str) -> bool:
@@ -65,9 +80,24 @@ def subject_min_score(subject: str | None, default_score: float) -> float:
     return max(0.35, _SUBJECT_MIN_SCORE.get(subject.strip().lower(), default_score))
 
 
-def should_rewrite(query: str, subject: str | None, min_chars: int = 45) -> bool:
-    """Run query rewrite only when subject is unknown or the query is long."""
-    return (not subject) or (len(query.strip()) > min_chars)
+def needs_cross_lang_rewrite(query: str, textbook_medium: str = "bangla_version") -> bool:
+    """True when query language differs from textbook_medium script so search terms need translation."""
+    has_bn = bool(_HAS_BN.search(query or ""))
+    if textbook_medium == "english_version" and has_bn:
+        return True
+    if textbook_medium == "bangla_version" and not has_bn and bool(re.search(r"[A-Za-z]", query or "")):
+        return True
+    return False
+
+
+def should_rewrite(
+    query: str,
+    subject: str | None,
+    min_chars: int = 45,
+    textbook_medium: str = "bangla_version",
+) -> bool:
+    """Run query rewrite when subject is unknown, query is long, or query script differs from textbook medium."""
+    return (not subject) or (len(query.strip()) > min_chars) or needs_cross_lang_rewrite(query, textbook_medium)
 
 
 def should_skip_verify(top_score: float | None, cites: list[dict], threshold: float = 0.85) -> bool:
@@ -78,7 +108,12 @@ def should_skip_verify(top_score: float | None, cites: list[dict], threshold: fl
 def format_context(chunks: list[dict], max_chars: int = 3600, max_chunks: int = 4, max_chunk_chars: int = 800) -> str:
     parts, used = [], 0
     for c in chunks[:max_chunks]:
-        head = f"[{c['id']}] (শ্রেণি {c.get('class_level', '-')}, {c.get('subject', '-')}, অধ্যায় {c.get('chapter_no', '-')}: {c.get('chapter') or '-'})"
+        pg = ""
+        if c.get("page_start") is not None:
+            pg_end = c.get("page_end")
+            pg = f", pp. {c['page_start']}-{pg_end}" if pg_end and pg_end != c["page_start"] else f", p. {c['page_start']}"
+        med = c.get("textbook_medium") or "-"
+        head = f"[{c['id']}] (Class {c.get('class_level', '-')}, {med}, {c.get('subject', '-')}, Ch {c.get('chapter_no', '-')}: {c.get('chapter') or '-'}{pg})"
         text = (c.get("text") or "")[:max_chunk_chars]
         body = f"{head}\n{text}"
         if used + len(body) > max_chars and parts:
@@ -88,9 +123,8 @@ def format_context(chunks: list[dict], max_chars: int = 3600, max_chunks: int = 
     return "\n\n".join(parts)
 
 
-def clean_citations(citations, chunks: list[dict]) -> list[dict]:
-    """Keep only citations whose chunk_id was really retrieved; rebuild every field from chunk metadata.
-    The model can never invent a source. (Dataset has no page numbers: cite class/subject/chapter/chunk_ref.)"""
+def clean_citations(citations, chunks: list[dict], expected_medium: str | None = None) -> list[dict]:
+    """Keep only citations whose chunk_id was really retrieved and matches expected_medium; rebuild metadata from DB."""
     by_id = {str(c["id"]): c for c in chunks}
     out, seen = [], set()
     for ci in citations or []:
@@ -100,26 +134,44 @@ def clean_citations(citations, chunks: list[dict]) -> list[dict]:
         c = by_id.get(str(raw_id))
         if c is None or c["id"] in seen:
             continue
+        if expected_medium and c.get("textbook_medium") and c.get("textbook_medium") != expected_medium:
+            continue
         seen.add(c["id"])
         out.append(
             {
                 "chunk_id": c["id"],
                 "chunk_ref": c.get("chunk_ref"),
                 "book": c.get("book"),
+                "curriculum_id": c.get("curriculum_id") or "nctb",
+                "textbook_medium": c.get("textbook_medium") or expected_medium or "bangla_version",
                 "class_level": c.get("class_level"),
                 "subject": c.get("subject"),
                 "chapter_no": c.get("chapter_no"),
                 "chapter": c.get("chapter"),
-                "page": c.get("page_start"),  # None for Mendeley data; kept for PDF-based books
+                "page": c.get("page_start"),
+                "page_start": c.get("page_start"),
+                "page_end": c.get("page_end"),
                 "snippet": c["text"][:240],
             }
         )
     return out
 
 
-def _refuse(reason: str, t0: float, top_score=None, topic=None, cost=0.0, query=None) -> dict:
+def _refuse(
+    reason: str,
+    t0: float,
+    top_score=None,
+    topic=None,
+    cost=0.0,
+    query=None,
+    *,
+    answer_language: str = "bn",
+    curriculum_id: str = "nctb",
+    textbook_medium: str = "bangla_version",
+    custom_answer: str | None = None,
+) -> dict:
     return {
-        "answer": REFUSAL,
+        "answer": custom_answer or refusal_text(answer_language),
         "steps": [],
         "citations": [],
         "confidence": 0.0,
@@ -131,19 +183,46 @@ def _refuse(reason: str, t0: float, top_score=None, topic=None, cost=0.0, query=
         "cost_usd": cost,
         "cached": False,
         "query": query,
+        "curriculum_id": curriculum_id,
+        "textbook_medium": textbook_medium,
+        "answer_language": answer_language,
     }
 
 
-def _default_retrieve(query, class_level, subject, cfg):
+def _default_retrieve(query, class_level, subject, cfg, *, curriculum_id="nctb", textbook_medium="bangla_version"):
     from . import retrieval
 
-    return retrieval.search(query, class_level, subject, cfg=cfg)
+    return retrieval.search(
+        query,
+        class_level,
+        subject,
+        cfg=cfg,
+        curriculum_id=curriculum_id,
+        textbook_medium=textbook_medium,
+    )
+
+
+def _call_retrieve(retrieve_fn, query, class_level, subject, cfg, curriculum_id, textbook_medium):
+    try:
+        return retrieve_fn(
+            query,
+            class_level,
+            subject,
+            cfg,
+            curriculum_id=curriculum_id,
+            textbook_medium=textbook_medium,
+        )
+    except TypeError:
+        return retrieve_fn(query, class_level, subject, cfg)
 
 
 class PipelineState(TypedDict, total=False):
     question: str
     class_level: int
     subject: str | None
+    curriculum_id: str
+    textbook_medium: str
+    answer_language: str
     query: str
     chunks: list[dict]
     top_score: float
@@ -166,9 +245,12 @@ def build_graph(cfg, retrieve_fn, llm_fn):
         q = state["question"]
         query = q
         cost = state.get("cost", 0.0)
-        if cfg.rewrite and should_rewrite(q, state.get("subject")):
+        med = state.get("textbook_medium", "bangla_version")
+        if cfg.rewrite and should_rewrite(q, state.get("subject"), textbook_medium=med):
+            target_lang = "English" if med == "english_version" else "Bangla"
+            sys_prompt = load_prompt("query_rewrite").replace("{target_lang}", target_lang)
             try:
-                obj, u = llm_fn(load_prompt("query_rewrite"), q, cfg.llm_fast_model, 300)
+                obj, u = llm_fn(sys_prompt, q, cfg.llm_fast_model, 300)
                 cost += u.get("cost", 0.0)
                 query = (obj.get("query") or q).strip() or q
             except Exception:
@@ -176,7 +258,15 @@ def build_graph(cfg, retrieve_fn, llm_fn):
         return {"query": query, "cost": cost}
 
     def retrieve_node(state: PipelineState) -> dict:
-        chunks = retrieve_fn(state["query"], state["class_level"], state.get("subject"), cfg)
+        chunks = _call_retrieve(
+            retrieve_fn,
+            state["query"],
+            state["class_level"],
+            state.get("subject"),
+            cfg,
+            state.get("curriculum_id", "nctb"),
+            state.get("textbook_medium", "bangla_version"),
+        )
         top_score = max((c.get("sim", 0.0) for c in chunks), default=0.0)
         topic = chunks[0].get("chapter") if chunks else None
         threshold = subject_min_score(state.get("subject"), cfg.min_score)
@@ -186,19 +276,34 @@ def build_graph(cfg, retrieve_fn, llm_fn):
         return {"chunks": chunks, "top_score": top_score, "topic": topic, "ctx": ctx, "refused": False}
 
     def answer_node(state: PipelineState) -> dict:
-        system = load_prompt("tutor_system").replace("{class}", str(state["class_level"]))
+        ans_lang = state.get("answer_language", "bn")
+        med = state.get("textbook_medium", "bangla_version")
+        lang_label = "English" if ans_lang == "en" else "Bangla (বাংলা)"
+        med_label = "NCTB English Version" if med == "english_version" else "NCTB Bangla Version"
+        ref_txt = refusal_text(ans_lang)
+        system = (
+            load_prompt("tutor_system")
+            .replace("{class}", str(state["class_level"]))
+            .replace("{answer_language}", lang_label)
+            .replace("{textbook_medium}", med_label)
+            .replace("{refusal}", ref_txt)
+        )
         user_msg = f"CONTEXT:\n{state['ctx']}\n\nQUESTION: {state['question']}"
         if state.get("hint"):
             user_msg += f"\n\nHINT: {state['hint']}"
         obj, u = llm_fn(system, user_msg, cfg.llm_model, 1500)
         cost = state.get("cost", 0.0) + u.get("cost", 0.0)
         ans = (obj.get("answer") or "").strip()
-        if not ans or ans == REFUSAL:
+        if not ans or ans == REFUSAL or ans == REFUSAL_EN:
             return {"raw_obj": obj, "ans": ans, "cost": cost, "refused": True, "reason": "model_refused"}
         return {"raw_obj": obj, "ans": ans, "cost": cost, "refused": False, "reason": None}
 
     def check_cites_node(state: PipelineState) -> dict:
-        cites = clean_citations(state["raw_obj"].get("citations"), state["chunks"])
+        cites = clean_citations(
+            state["raw_obj"].get("citations"),
+            state["chunks"],
+            expected_medium=state.get("textbook_medium"),
+        )
         if not cites:
             return {"cites": [], "refused": True, "reason": "no_valid_citation"}
         return {"cites": cites, "refused": False}
@@ -241,31 +346,79 @@ def build_graph(cfg, retrieve_fn, llm_fn):
     return g.compile()
 
 
-def answer(question: str, class_level: int, subject: str | None = None, *, cfg=None, retrieve_fn=None, llm_fn=None) -> dict:
+def answer(
+    question: str,
+    class_level: int,
+    subject: str | None = None,
+    *,
+    curriculum_id: str = "nctb",
+    textbook_medium: str = "bangla_version",
+    answer_language: str = "bn",
+    cfg=None,
+    retrieve_fn=None,
+    llm_fn=None,
+    availability_fn=None,
+) -> dict:
     cfg = cfg or get_config()
     t0 = time.time()
+    curr = (curriculum_id or "nctb").strip().lower()
+    med = (textbook_medium or "bangla_version").strip().lower()
+    ans_lang = "en" if str(answer_language or "bn").strip().lower() == "en" else "bn"
+
     q = normalize_bangla(question)[: cfg.max_question_chars]
     if not q:
-        return _refuse("empty_question", t0)
+        return _refuse("empty_question", t0, answer_language=ans_lang, curriculum_id=curr, textbook_medium=med)
     if is_distress_query(q):
-        return {**_refuse("safety_distress", t0, query=q), "answer": SAFETY_MESSAGE}
+        return _refuse(
+            "safety_distress",
+            t0,
+            query=q,
+            answer_language=ans_lang,
+            curriculum_id=curr,
+            textbook_medium=med,
+            custom_answer=SAFETY_MESSAGE,
+        )
 
-    key = hashlib.sha256(f"{q}|{class_level}|{subject}".encode()).hexdigest()
+    if availability_fn is not None:
+        avail = bool(availability_fn(class_level, subject, med, curr))
+    elif retrieve_fn is None:
+        from . import db
+
+        avail = db.is_curriculum_available(class_level, subject, textbook_medium=med, curriculum_id=curr, cfg=cfg)
+    else:
+        avail = True
+
+    if not avail:
+        msg = UNAVAILABLE_EN if ans_lang == "en" else UNAVAILABLE_BN
+        return _refuse(
+            "unavailable_curriculum",
+            t0,
+            query=q,
+            answer_language=ans_lang,
+            curriculum_id=curr,
+            textbook_medium=med,
+            custom_answer=msg,
+        )
+
+    key = hashlib.sha256(f"{curr}|{med}|{class_level}|{subject}|{ans_lang}|{q}".encode()).hexdigest()
     if cfg.cache and key in _CACHE:
         return {**_CACHE[key], "cached": True, "latency_ms": int((time.time() - t0) * 1000)}
 
-    retrieve_fn = retrieve_fn or _default_retrieve
+    use_retrieve = retrieve_fn or _default_retrieve
     if llm_fn is None:
         from . import llm
 
         llm_fn = llm.chat_json
 
-    graph = build_graph(cfg, retrieve_fn, llm_fn)
+    graph = build_graph(cfg, use_retrieve, llm_fn)
     out = graph.invoke(
         {
             "question": q,
             "class_level": class_level,
             "subject": subject,
+            "curriculum_id": curr,
+            "textbook_medium": med,
+            "answer_language": ans_lang,
             "query": q,
             "retries": 0,
             "cost": 0.0,
@@ -278,7 +431,17 @@ def answer(question: str, class_level: int, subject: str | None = None, *, cfg=N
     topic = out.get("topic")
     query = out.get("query", q)
     if out.get("refused"):
-        return _refuse(out.get("reason") or "refused", t0, top_score, topic, cost, query)
+        return _refuse(
+            out.get("reason") or "refused",
+            t0,
+            top_score,
+            topic,
+            cost,
+            query,
+            answer_language=ans_lang,
+            curriculum_id=curr,
+            textbook_medium=med,
+        )
 
     obj = out.get("raw_obj") or {}
     res = {
@@ -294,6 +457,9 @@ def answer(question: str, class_level: int, subject: str | None = None, *, cfg=N
         "cost_usd": cost,
         "cached": False,
         "query": query,
+        "curriculum_id": curr,
+        "textbook_medium": med,
+        "answer_language": ans_lang,
     }
     if cfg.cache:
         _CACHE[key] = res

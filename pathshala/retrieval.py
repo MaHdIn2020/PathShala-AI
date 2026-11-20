@@ -1,4 +1,4 @@
-"""Hybrid retrieval: pgvector cosine + Postgres FTS, fused with RRF. Optional cross-encoder rerank."""
+"""Hybrid retrieval: pgvector cosine + Postgres FTS, fused with RRF. Strictly isolated by curriculum & textbook_medium."""
 import re
 
 from . import embed as _embed
@@ -11,7 +11,7 @@ _STOP = {
 
 
 def fts_terms(text: str) -> list[str]:
-    """Extract clean Bangla/English search terms for low-RAM FTS fallback."""
+    """Extract clean Bangla/English search terms for FTS queries."""
     raw = [t for t in re.sub(r"[^\w\u0980-\u09FF]+", " ", (text or "").lower()).split() if len(t) >= 2]
     filtered = [t for t in raw if t not in _STOP]
     return list(dict.fromkeys(filtered or raw))[:10]
@@ -20,6 +20,19 @@ def fts_terms(text: str) -> list[str]:
 def fts_or_query(text: str) -> str:
     """Build a Postgres 'simple' OR tsquery string from clean terms."""
     return " | ".join(fts_terms(text))
+
+
+def lexical_sim(terms: list[str], hay: str) -> float:
+    """Calibrated lexical similarity in [0.0, 0.92] when a chunk has no embedding vector."""
+    if not terms:
+        return 0.0
+    low = (hay or "").lower()
+    hits = sum(1 for t in terms if t in low)
+    if not hits:
+        return 0.0
+    if len(terms) >= 3 and hits == 1:
+        return 0.41
+    return min(0.92, round(0.42 + 0.48 * (hits / max(1, len(terms))), 4))
 
 
 def rrf(rank_lists, k: int = 60, top: int | None = None):
@@ -32,12 +45,27 @@ def rrf(rank_lists, k: int = 60, top: int | None = None):
     return out[:top] if top else out
 
 
-_COLS = "c.id, c.chunk_ref, c.text, c.contextual_text, c.chapter_no, c.chapter, c.page_start, c.page_end, t.title as book, t.id as book_id, t.class_level, t.subject"
-_FILTER = "t.class_level = %(cl)s and (%(subj)s::text is null or t.subject = %(subj)s)"
+_COLS = (
+    "c.id, c.chunk_ref, c.text, c.contextual_text, c.chapter_no, c.chapter, c.page_start, c.page_end, "
+    "t.title as book, t.id as book_id, t.curriculum_id, t.textbook_medium, t.edition_year, t.class_level, t.subject"
+)
+_FILTER = (
+    "t.curriculum_id = %(curr)s and t.textbook_medium = %(med)s "
+    "and t.class_level = %(cl)s and (%(subj)s::text is null or t.subject = %(subj)s)"
+)
 
 
-def fts_search(question: str, class_level: int, subject: str | None, k: int = 30, cfg=None) -> list[dict]:
-    """Low-RAM Postgres FTS-only retrieval (used when EMBED_PROVIDER=fts, e.g. 512MB Render free tier)."""
+def fts_search(
+    question: str,
+    class_level: int,
+    subject: str | None,
+    k: int = 30,
+    cfg=None,
+    *,
+    curriculum_id: str = "nctb",
+    textbook_medium: str = "bangla_version",
+) -> list[dict]:
+    """Low-RAM Postgres FTS-only retrieval scoped strictly to curriculum_id & textbook_medium."""
     from .db import get_conn
 
     cfg = cfg or get_config()
@@ -45,7 +73,7 @@ def fts_search(question: str, class_level: int, subject: str | None, k: int = 30
     tsq = " | ".join(terms)
     if not tsq:
         return []
-    p = {"cl": class_level, "subj": subject, "tsq": tsq, "k": k}
+    p = {"curr": curriculum_id, "med": textbook_medium, "cl": class_level, "subj": subject, "tsq": tsq, "k": k}
     with get_conn(cfg) as c, c.cursor() as cur:
         cur.execute(
             f"""select {_COLS}, ts_rank(c.fts, to_tsquery('simple', %(tsq)s)) as rank
@@ -58,23 +86,52 @@ def fts_search(question: str, class_level: int, subject: str | None, k: int = 30
     out = []
     for r in rows:
         d = dict(r)
-        hay = ((d.get("text") or "") + " " + (d.get("chapter") or "")).lower()
-        hits = sum(1 for t in terms if t in hay)
-        d["sim"] = min(0.95, round(0.35 + 0.60 * (hits / max(1, len(terms))), 4)) if hits else 0.0
+        hay = (d.get("text") or "") + " " + (d.get("chapter") or "")
+        d["sim"] = lexical_sim(terms, hay)
         d["rrf"] = float(d.pop("rank", 0.0) or 0.0)
         out.append(d)
     out.sort(key=lambda x: (-x["sim"], -x["rrf"]))
     return out
 
 
-def hybrid_search(question: str, class_level: int, subject: str | None, k: int = 30, cfg=None, embed_fn=None):
+def hybrid_search(
+    question: str,
+    class_level: int,
+    subject: str | None,
+    k: int = 30,
+    cfg=None,
+    embed_fn=None,
+    *,
+    curriculum_id: str = "nctb",
+    textbook_medium: str = "bangla_version",
+):
     from .db import get_conn
 
     cfg = cfg or get_config()
     if cfg.embed_provider == "fts" and embed_fn is None:
-        return fts_search(question, class_level, subject, k=k, cfg=cfg)
+        return fts_search(
+            question,
+            class_level,
+            subject,
+            k=k,
+            cfg=cfg,
+            curriculum_id=curriculum_id,
+            textbook_medium=textbook_medium,
+        )
+
+    terms = fts_terms(question)
+    tsq = " | ".join(terms)
     qvec = _embed.to_pgvector((embed_fn or _embed.embed_query)(question))
-    p = {"cl": class_level, "subj": subject, "q": question, "vec": qvec, "k": k}
+    p = {
+        "curr": curriculum_id,
+        "med": textbook_medium,
+        "cl": class_level,
+        "subj": subject,
+        "q": question,
+        "tsq": tsq,
+        "vec": qvec,
+        "k": k,
+    }
     rows: dict = {}
     vec_ids, kw_ids = [], []
     with get_conn(cfg) as c, c.cursor() as cur:
@@ -88,17 +145,26 @@ def hybrid_search(question: str, class_level: int, subject: str | None, k: int =
         for r in cur.fetchall():
             rows[r["id"]] = r
             vec_ids.append(r["id"])
-        cur.execute(
-            f"""select {_COLS}, 0.0::float as sim
-                from chunks c join textbooks t on t.id=c.textbook_id
-                where {_FILTER} and c.fts @@ plainto_tsquery('simple', %(q)s)
-                order by ts_rank(c.fts, plainto_tsquery('simple', %(q)s)) desc limit %(k)s""",
-            p,
-        )
-        for r in cur.fetchall():
-            if r["id"] not in rows:
-                rows[r["id"]] = r
-            kw_ids.append(r["id"])
+
+        if tsq:
+            cur.execute(
+                f"""select {_COLS},
+                           case when c.embedding is not null then 1 - (c.embedding <=> %(vec)s::vector) else 0.0 end as sim,
+                           c.embedding is not null as has_emb
+                    from chunks c join textbooks t on t.id=c.textbook_id
+                    where {_FILTER} and c.fts @@ to_tsquery('simple', %(tsq)s)
+                    order by ts_rank(c.fts, to_tsquery('simple', %(tsq)s)) desc limit %(k)s""",
+                p,
+            )
+            for r in cur.fetchall():
+                d = dict(r)
+                has_emb = d.pop("has_emb", False)
+                if not has_emb:
+                    d["sim"] = lexical_sim(terms, (d.get("text") or "") + " " + (d.get("chapter") or ""))
+                if d["id"] not in rows:
+                    rows[d["id"]] = d
+                kw_ids.append(d["id"])
+
     fused = rrf([vec_ids, kw_ids])
     out = []
     for cid, score in fused:
@@ -121,11 +187,28 @@ def _rerank(question: str, chunks: list[dict], top: int) -> list[dict]:
     return [c for c, _ in ranked[:top]]
 
 
-def search(question: str, class_level: int, subject: str | None = None, k: int | None = None, cfg=None):
-    """Final top-k chunks (hybrid + optional rerank). Each chunk has 'sim' (cosine) for refusal gating."""
+def search(
+    question: str,
+    class_level: int,
+    subject: str | None = None,
+    k: int | None = None,
+    cfg=None,
+    *,
+    curriculum_id: str = "nctb",
+    textbook_medium: str = "bangla_version",
+):
+    """Final top-k chunks strictly isolated to curriculum_id & textbook_medium."""
     cfg = cfg or get_config()
     k = k or cfg.rerank_k
-    cands = hybrid_search(question, class_level, subject, k=cfg.retrieve_k, cfg=cfg)
+    cands = hybrid_search(
+        question,
+        class_level,
+        subject,
+        k=cfg.retrieve_k,
+        cfg=cfg,
+        curriculum_id=curriculum_id,
+        textbook_medium=textbook_medium,
+    )
     if cfg.rerank and cands:
         return _rerank(question, cands, k)
     return cands[:k]

@@ -1,4 +1,6 @@
 """Postgres helpers (psycopg3). Logging is best-effort: never break an answer because logging failed."""
+from pathlib import Path
+
 from .config import get_config
 
 
@@ -10,14 +12,32 @@ def get_conn(cfg=None):
     return psycopg.connect(cfg.database_url, row_factory=dict_row)
 
 
+def apply_migrations(migrations_dir: Path | None = None, cfg=None) -> list[str]:
+    """Execute sorted SQL migration files idempotently."""
+    mdir = migrations_dir or (Path(__file__).resolve().parent.parent / "db" / "migrations")
+    files = sorted(mdir.glob("*.sql"))
+    applied = []
+    with get_conn(cfg) as c, c.cursor() as cur:
+        for f in files:
+            cur.execute(f.read_text(encoding="utf-8"))
+            applied.append(f.name)
+    return applied
+
+
 def log_query(rec: dict):
+    payload = {
+        "curriculum_id": "nctb",
+        "textbook_medium": "bangla_version",
+        "answer_language": "bn",
+        **rec,
+    }
     try:
         with get_conn() as c, c.cursor() as cur:
             cur.execute(
-                """insert into queries(session_id,class_level,subject,question,topic,top_score,refused,reason,latency_ms,cost_usd)
-                   values (%(session_id)s,%(class_level)s,%(subject)s,%(question)s,%(topic)s,%(top_score)s,%(refused)s,%(reason)s,%(latency_ms)s,%(cost_usd)s)
+                """insert into queries(session_id,curriculum_id,textbook_medium,answer_language,class_level,subject,question,topic,top_score,refused,reason,latency_ms,cost_usd)
+                   values (%(session_id)s,%(curriculum_id)s,%(textbook_medium)s,%(answer_language)s,%(class_level)s,%(subject)s,%(question)s,%(topic)s,%(top_score)s,%(refused)s,%(reason)s,%(latency_ms)s,%(cost_usd)s)
                    returning id""",
-                rec,
+                payload,
             )
             return cur.fetchone()["id"]
     except Exception:
@@ -31,6 +51,51 @@ def log_feedback(query_id: int, helpful: bool, comment: str | None = None) -> bo
         return True
     except Exception:
         return False
+
+
+def get_curriculum_catalog(cfg=None) -> list[dict]:
+    """Return available textbooks with chunk/embedding counts, excluding unknown medium."""
+    with get_conn(cfg) as c, c.cursor() as cur:
+        cur.execute(
+            """select t.id, t.curriculum_id, t.textbook_medium, t.edition_year, t.class_level, t.subject,
+                      t.title, t.source, t.source_license,
+                      count(c.id) as chunk_count,
+                      count(c.embedding) as embedded_count
+               from textbooks t
+               join chunks c on c.textbook_id = t.id
+               where t.textbook_medium in ('bangla_version', 'english_version')
+               group by t.id
+               having count(c.id) > 0
+               order by t.curriculum_id, t.textbook_medium, t.class_level, t.subject"""
+        )
+        return cur.fetchall()
+
+
+def is_curriculum_available(
+    class_level: int,
+    subject: str | None = None,
+    textbook_medium: str = "bangla_version",
+    curriculum_id: str = "nctb",
+    cfg=None,
+) -> bool:
+    """True only if verified chunks exist for the exact curriculum/medium/class/(subject)."""
+    if textbook_medium not in ("bangla_version", "english_version"):
+        return False
+    with get_conn(cfg) as c, c.cursor() as cur:
+        cur.execute(
+            """select exists (
+                   select 1
+                   from textbooks t
+                   join chunks c on c.textbook_id = t.id
+                   where t.curriculum_id = %(curr)s
+                     and t.textbook_medium = %(med)s
+                     and t.class_level = %(cl)s
+                     and (%(subj)s::text is null or t.subject = %(subj)s)
+               ) as ok""",
+            {"curr": curriculum_id, "med": textbook_medium, "cl": int(class_level), "subj": subject},
+        )
+        row = cur.fetchone()
+        return bool(row and row.get("ok"))
 
 
 def topic_counts(limit: int = 50) -> list[dict]:
@@ -158,7 +223,7 @@ def get_chunk(chunk_id: int) -> dict | None:
     with get_conn() as c, c.cursor() as cur:
         cur.execute(
             """select c.id, c.chunk_ref, c.text, c.chapter_no, c.chapter, c.page_start, c.page_end,
-                      t.title as book, t.class_level, t.subject
+                      t.title as book, t.curriculum_id, t.textbook_medium, t.edition_year, t.class_level, t.subject
                from chunks c join textbooks t on t.id=c.textbook_id where c.id=%s""",
             (chunk_id,),
         )
@@ -168,7 +233,7 @@ def get_chunk(chunk_id: int) -> dict | None:
 def get_chapter(book_id: int, chapter_no: int) -> list[dict]:
     with get_conn() as c, c.cursor() as cur:
         cur.execute(
-            "select id, chunk_ref, text, chapter_no, chapter from chunks where textbook_id=%s and chapter_no=%s order by id",
+            "select id, chunk_ref, text, chapter_no, chapter, page_start, page_end from chunks where textbook_id=%s and chapter_no=%s order by id",
             (book_id, chapter_no),
         )
         return cur.fetchall()
@@ -177,7 +242,7 @@ def get_chapter(book_id: int, chapter_no: int) -> list[dict]:
 def list_chapters(book_id: int) -> list[dict]:
     with get_conn() as c, c.cursor() as cur:
         cur.execute(
-            "select chapter_no, chapter, count(*) as chunks from chunks where textbook_id=%s group by chapter_no, chapter order by chapter_no",
+            "select chapter_no, chapter, min(page_start) as page_start, max(page_end) as page_end, count(*) as chunks from chunks where textbook_id=%s group by chapter_no, chapter order by chapter_no",
             (book_id,),
         )
         return cur.fetchall()
@@ -185,5 +250,7 @@ def list_chapters(book_id: int) -> list[dict]:
 
 def list_books() -> list[dict]:
     with get_conn() as c, c.cursor() as cur:
-        cur.execute("select id, title, class_level, subject from textbooks order by class_level, subject")
+        cur.execute(
+            "select id, title, curriculum_id, textbook_medium, edition_year, class_level, subject from textbooks order by curriculum_id, textbook_medium, class_level, subject"
+        )
         return cur.fetchall()

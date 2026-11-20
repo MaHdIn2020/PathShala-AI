@@ -12,12 +12,12 @@ from . import db, llm, mastery, pipeline, retrieval
 from .config import get_config
 from .security import RateLimiter, allowed_origins, verify_teacher_token
 
-app = FastAPI(title="PathShala AI", version="0.1.0")
+app = FastAPI(title="PathShala AI", version="0.2.0")
 app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins(),
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -49,6 +49,9 @@ class AskReq(BaseModel):
     class_level: int = Field(ge=1, le=12)
     subject: str | None = None
     session_id: str | None = None
+    curriculum_id: str = "nctb"
+    textbook_medium: str = "bangla_version"
+    answer_language: str = "bn"
 
 
 class FeedbackReq(BaseModel):
@@ -63,6 +66,9 @@ class AskImageReq(BaseModel):
     class_level: int = Field(ge=1, le=12)
     subject: str | None = None
     session_id: str | None = None
+    curriculum_id: str = "nctb"
+    textbook_medium: str = "bangla_version"
+    answer_language: str = "bn"
 
 
 @app.get("/health")
@@ -70,12 +76,29 @@ def health():
     return {"ok": True}
 
 
+@app.get("/curriculum/catalog")
+def curriculum_catalog():
+    """Return genuinely available (curriculum_id, textbook_medium, class_level, subject) combinations."""
+    books = db.get_curriculum_catalog()
+    return {"books": books, "total_books": len(books)}
+
+
 @app.post("/ask")
 def ask(req: AskReq):
-    res = pipeline.answer(req.question, req.class_level, req.subject)
+    res = pipeline.answer(
+        req.question,
+        req.class_level,
+        req.subject,
+        curriculum_id=req.curriculum_id,
+        textbook_medium=req.textbook_medium,
+        answer_language=req.answer_language,
+    )
     res["query_id"] = db.log_query(
         {
             "session_id": req.session_id,
+            "curriculum_id": req.curriculum_id,
+            "textbook_medium": req.textbook_medium,
+            "answer_language": req.answer_language,
             "class_level": req.class_level,
             "subject": req.subject,
             "question": req.question[:600],
@@ -106,8 +129,18 @@ WARMUP_QUESTIONS = [
 def ask_stream(req: AskReq):
     """SSE endpoint: emits status immediately, then answer chunks and final JSON payload."""
     def event_gen():
-        yield f"data: {json.dumps({'type': 'status', 'message': 'পাঠ্যবই খোঁজা হচ্ছে...'}, ensure_ascii=False)}\n\n"
-        res = pipeline.answer(req.question, req.class_level, req.subject)
+        search_msg = (
+            "Searching selected textbook..." if req.answer_language == "en" else "পাঠ্যবই খোঁজা হচ্ছে..."
+        )
+        yield f"data: {json.dumps({'type': 'status', 'message': search_msg}, ensure_ascii=False)}\n\n"
+        res = pipeline.answer(
+            req.question,
+            req.class_level,
+            req.subject,
+            curriculum_id=req.curriculum_id,
+            textbook_medium=req.textbook_medium,
+            answer_language=req.answer_language,
+        )
         cites = res.get("citations") or []
         if cites and not res.get("refused"):
             c0 = cites[0]
@@ -116,6 +149,9 @@ def ask_stream(req: AskReq):
         res["query_id"] = db.log_query(
             {
                 "session_id": req.session_id,
+                "curriculum_id": req.curriculum_id,
+                "textbook_medium": req.textbook_medium,
+                "answer_language": req.answer_language,
                 "class_level": req.class_level,
                 "subject": req.subject,
                 "question": req.question[:600],
@@ -152,7 +188,6 @@ def warmup():
 @app.post("/ask-image")
 def ask_image(req: AskImageReq):
     """Photo input: 2MB limit, no image storage. Transcribes question then calls answer pipeline."""
-    # 2MB base64 check (~2.8M characters)
     if len(req.image_base64) > 2_800_000:
         raise HTTPException(413, "চিত্রের আকার ২ মেগাবাইট (2MB) এর বেশি হতে পারবে না।")
 
@@ -182,12 +217,22 @@ def ask_image(req: AskImageReq):
             "query": None,
         }
 
-    res = pipeline.answer(extracted_q, req.class_level, req.subject)
+    res = pipeline.answer(
+        extracted_q,
+        req.class_level,
+        req.subject,
+        curriculum_id=req.curriculum_id,
+        textbook_medium=req.textbook_medium,
+        answer_language=req.answer_language,
+    )
     res["transcribed_question"] = extracted_q
     res["cost_usd"] = res.get("cost_usd", 0.0) + usage.get("cost", 0.0)
     res["query_id"] = db.log_query(
         {
             "session_id": req.session_id,
+            "curriculum_id": req.curriculum_id,
+            "textbook_medium": req.textbook_medium,
+            "answer_language": req.answer_language,
             "class_level": req.class_level,
             "subject": req.subject,
             "question": extracted_q[:600],
@@ -204,7 +249,13 @@ def ask_image(req: AskImageReq):
 
 @app.post("/search")
 def search(req: AskReq):
-    chunks = retrieval.search(req.question, req.class_level, req.subject)
+    chunks = retrieval.search(
+        req.question,
+        req.class_level,
+        req.subject,
+        curriculum_id=req.curriculum_id,
+        textbook_medium=req.textbook_medium,
+    )
     return [{k: v for k, v in c.items() if k not in ("contextual_text",)} for c in chunks]
 
 
@@ -244,12 +295,12 @@ class ExplainEnReq(BaseModel):
 
 @app.post("/explain-en")
 def explain_en(req: ExplainEnReq):
-    """Explain an already-grounded Bangla textbook answer in simple English without adding external facts."""
+    """Explain an already-grounded textbook answer in simple English without adding external facts."""
     system = (
-        "Translate and explain the given Bangla primary-school textbook answer in simple, clear English. "
-        "Do NOT add any facts that are not in the provided Bangla answer. Keep it concise (2-4 sentences)."
+        "Translate and explain the given textbook answer in simple, clear English. "
+        "Do NOT add any facts that are not in the provided answer. Keep it concise (2-4 sentences)."
     )
-    user = f"QUESTION: {req.question}\nBANGLA ANSWER:\n{req.answer}"
+    user = f"QUESTION: {req.question}\nTEXTBOOK ANSWER:\n{req.answer}"
     text, usage = llm.chat_text(system, user, get_config().llm_fast_model, max_tokens=300)
     return {"english": text, "cost_usd": usage.get("cost", 0.0)}
 

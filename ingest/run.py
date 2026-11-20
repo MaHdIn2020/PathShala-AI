@@ -1,5 +1,7 @@
-"""Ingest NCTB-PrimaryText -> Postgres.  python -m ingest.run --data data/raw/mendeley [--limit 50] [--no-ctx] [--dry-run]
-Steps: load -> (contextualise via fast LLM, cached) -> embed (local bge-m3) -> upsert. Re-runnable (upsert on chunk_ref)."""
+"""Ingest NCTB datasets -> Postgres.
+Usage:
+  python -m ingest.run --data data/raw/NCTB-SchoolText-English --medium english_version --max-class 0 --no-ctx --fts-only
+Steps: load -> prepare -> (optional ctx) -> (optional embed via bge-m3) -> batched upsert. Re-runnable and idempotent."""
 import argparse
 import hashlib
 import sys
@@ -14,14 +16,15 @@ from .mendeley import load_dir
 from .prepare import prepare
 
 CACHE = Path(__file__).resolve().parent.parent / "data" / "cache" / "ctx"
-SOURCE = "NCTB-PrimaryText (Mendeley Data, DOI 10.17632/w3hj4m45d9.1, CC BY 4.0)"
+SOURCE_BN = "NCTB-PrimaryText / SchoolText Bangla (Mendeley Data, DOI 10.17632/w3hj4m45d9.1, CC BY 4.0)"
+SOURCE_EN = "NCTB-SchoolText English Version (CC BY 4.0)"
 
 
 def _neighbors(recs: list[dict]) -> dict:
     """chunk_ref -> section text (chapter chunks around it, capped) for contextualisation."""
     by_ch: dict = {}
     for r in recs:
-        by_ch.setdefault((r["class_level"], r["subject"], r["chapter_no"]), []).append(r)
+        by_ch.setdefault((r.get("textbook_medium"), r["class_level"], r["subject"], r["chapter_no"]), []).append(r)
     sec = {}
     for rows in by_ch.values():
         for i, r in enumerate(rows):
@@ -51,7 +54,7 @@ def contextualise(recs: list[dict], cfg, workers: int = 4) -> float:
         try:
             txt, u = llm.chat_text(system, user, cfg.llm_fast_model, 200)
             cost[0] += u.get("cost", 0.0)
-        except Exception as e:  # keep going; chunk still searchable without context
+        except Exception as e:
             print("ctx fail", r["chunk_ref"], str(e)[:80], file=sys.stderr)
             txt = ""
         r["contextual_text"] = txt
@@ -75,83 +78,123 @@ def embed_all(recs: list[dict], batch: int = 8) -> None:
     print()
 
 
-def upsert(recs: list[dict]) -> None:
+def _book_title(curr: str, med: str, cls: int, subj: str) -> str:
+    if med == "english_version":
+        return f"NCTB Class {cls} · {subj} (English Version)"
+    return f"NCTB শ্রেণি {cls} · {subj}"
+
+
+def upsert(recs: list[dict], source_label: str | None = None) -> None:
     from pathshala.db import get_conn
 
     with get_conn() as c, c.cursor() as cur:
         book_ids: dict = {}
         for r in recs:
-            k = (r["class_level"], r["subject"])
+            curr = r.get("curriculum_id") or "nctb"
+            med = r.get("textbook_medium") or "unknown"
+            k = (curr, med, r["class_level"], r["subject"])
             if k not in book_ids:
+                src = source_label or (SOURCE_EN if med == "english_version" else SOURCE_BN)
                 cur.execute(
-                    """insert into textbooks(title, class_level, subject, source, parser_version)
-                       values (%s,%s,%s,%s,%s)
-                       on conflict (class_level, subject) do update set source=excluded.source
+                    """insert into textbooks(title, curriculum_id, textbook_medium, edition_year, class_level, subject, source, source_license, parser_version)
+                       values (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       on conflict (curriculum_id, textbook_medium, class_level, subject) do update set
+                         title=excluded.title, source=excluded.source, source_license=excluded.source_license, parser_version=excluded.parser_version
                        returning id""",
-                    (f"NCTB শ্রেণি {k[0]} · {k[1]}", k[0], k[1], SOURCE, "mendeley-v1"),
+                    (_book_title(*k), curr, med, r.get("edition_year") or 2024, k[2], k[3], src, "CC BY 4.0", "mendeley-v2"),
                 )
                 book_ids[k] = cur.fetchone()["id"]
-            cur.execute(
-                """insert into chunks(textbook_id, chunk_ref, chapter_no, chapter, text, contextual_text, embedding, tokens)
-                   values (%s,%s,%s,%s,%s,%s,%s::vector,%s)
-                   on conflict (chunk_ref) do update set text=excluded.text, chapter=excluded.chapter,
-                     chapter_no=excluded.chapter_no, contextual_text=excluded.contextual_text, embedding=excluded.embedding""",
-                (
-                    book_ids[k],
-                    r["chunk_ref"],
-                    r["chapter_no"],
-                    r["chapter"],
-                    r["text"],
-                    r.get("contextual_text") or None,
-                    r["embedding"],
-                    len(r["text"]) // 3,
-                ),
+
+        rows = [
+            (
+                book_ids[(r.get("curriculum_id") or "nctb", r.get("textbook_medium") or "unknown", r["class_level"], r["subject"])],
+                r["chunk_ref"],
+                r["chapter_no"],
+                r["chapter"],
+                r.get("page_start"),
+                r.get("page_end"),
+                r["text"],
+                r.get("contextual_text") or None,
+                r.get("embedding"),
+                max(1, len(r["text"]) // 3),
             )
+            for r in recs
+        ]
+        cur.executemany(
+            """insert into chunks(textbook_id, chunk_ref, chapter_no, chapter, page_start, page_end, text, contextual_text, embedding, tokens)
+               values (%s,%s,%s,%s,%s,%s,%s,%s,%s::vector,%s)
+               on conflict (chunk_ref) do update set
+                 textbook_id=excluded.textbook_id,
+                 text=excluded.text,
+                 chapter=excluded.chapter,
+                 chapter_no=excluded.chapter_no,
+                 page_start=coalesce(excluded.page_start, chunks.page_start),
+                 page_end=coalesce(excluded.page_end, chunks.page_end),
+                 contextual_text=coalesce(excluded.contextual_text, chunks.contextual_text),
+                 embedding=coalesce(excluded.embedding, chunks.embedding)""",
+            rows,
+        )
 
 
-def existing_refs() -> set:
+def existing_refs(require_embedding: bool = True) -> set:
     from pathshala.db import get_conn
 
     with get_conn() as c, c.cursor() as cur:
-        cur.execute("select chunk_ref from chunks where embedding is not null")
+        sql = "select chunk_ref from chunks where embedding is not null" if require_embedding else "select chunk_ref from chunks"
+        cur.execute(sql)
         return {r["chunk_ref"] for r in cur.fetchall()}
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="data/raw/mendeley")
+    ap.add_argument("--medium", default="auto", choices=("auto", "bangla_version", "english_version", "unknown"))
+    ap.add_argument("--curriculum", default="nctb")
     ap.add_argument("--limit", type=int, default=0, help="first N records (smoke runs)")
     ap.add_argument("--no-ctx", action="store_true", help="skip LLM contextualisation (saves quota)")
+    ap.add_argument("--fts-only", action="store_true", help="skip local bge-m3 embeddings (upsert text + FTS + page ranges)")
     ap.add_argument("--dry-run", action="store_true", help="load + normalise only, print stats")
     ap.add_argument("--max-class", type=int, default=5, help="highest class to ingest (0 = all classes)")
-    ap.add_argument("--save-every", type=int, default=100, help="embed + save in batches of N (resumable)")
-    ap.add_argument("--force", action="store_true", help="re-embed chunks already in the DB")
+    ap.add_argument("--classes", default="", help="optional comma-separated class filter e.g. 1,2,8")
+    ap.add_argument("--subjects", default="", help="optional comma-separated subject filter e.g. science,math")
+    ap.add_argument("--save-every", type=int, default=500, help="save batch size")
+    ap.add_argument("--force", action="store_true", help="re-process chunks already in DB")
     a = ap.parse_args(argv)
     cfg = get_config()
     t0 = time.time()
-    loaded = load_dir(a.data)
+
+    loaded = load_dir(a.data, medium=a.medium, curriculum_id=a.curriculum)
     recs, stats = prepare(loaded, max_class=a.max_class)
+    if a.classes.strip():
+        cls_set = {int(x.strip()) for x in a.classes.split(",") if x.strip()}
+        recs = [r for r in recs if r["class_level"] in cls_set]
+    if a.subjects.strip():
+        subj_set = {x.strip().lower() for x in a.subjects.split(",") if x.strip()}
+        recs = [r for r in recs if r["subject"].lower() in subj_set]
     if a.limit:
         recs = recs[: a.limit]
+
     print(f"loaded {len(loaded)} chunks from {a.data}; kept {len(recs)}; {stats}")
     if not recs:
-        print("nothing to ingest: run scripts/inspect_dataset.py", file=sys.stderr)
+        print("nothing to ingest", file=sys.stderr)
         return 1
     if a.dry_run:
         refs = [r["chunk_ref"] for r in recs]
         lens = sorted(len(r["text"]) for r in recs)
-        print(f"unique refs: {len(set(refs)) == len(refs)}; empty text: {sum(1 for x in lens if x == 0)}")
+        paged = sum(1 for r in recs if r.get("page_start") is not None)
+        print(f"unique refs: {len(set(refs)) == len(refs)}; with page ranges: {paged}/{len(recs)}; empty text: {sum(1 for x in lens if x == 0)}")
         print(f"chars min/median/max: {lens[0]}/{lens[len(lens) // 2]}/{lens[-1]}")
         return 0
     if not a.no_ctx:
         print(f"contextualised; llm cost ~${contextualise(recs, cfg):.4f}")
-    if not a.force:  # resume: skip chunks already embedded in the DB
-        done = existing_refs()
+    if not a.force:
+        done = existing_refs(require_embedding=not a.fts_only)
         recs = [r for r in recs if r["chunk_ref"] not in done]
         print(f"{len(done)} already in DB; {len(recs)} to do")
     for i in range(0, len(recs), a.save_every):
         part = recs[i : i + a.save_every]
-        embed_all(part)
+        if not a.fts_only:
+            embed_all(part)
         upsert(part)
         print(f"saved {min(i + a.save_every, len(recs))}/{len(recs)}  elapsed {time.time() - t0:.0f}s", flush=True)
     print(f"done in {time.time() - t0:.0f}s")

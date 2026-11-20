@@ -11,11 +11,41 @@ mcp = FastMCP("nctb-corpus")
 
 
 @mcp.tool()
-def search_textbook(query: str, class_level: int, subject: str | None = None, k: int = 5) -> list[dict]:
-    """Hybrid search NCTB textbook chunks. Returns id, chunk_ref, class/subject, chapter, text, sim."""
-    out = retrieval.search(query, class_level, subject, k=min(max(k, 1), 10))
+def search_textbook(
+    query: str,
+    class_level: int,
+    subject: str | None = None,
+    k: int = 5,
+    textbook_medium: str = "bangla_version",
+    curriculum_id: str = "nctb",
+) -> list[dict]:
+    """Hybrid search NCTB textbook chunks isolated by curriculum & textbook_medium."""
+    kwargs = {"k": min(max(k, 1), 10)}
+    if textbook_medium != "bangla_version" or curriculum_id != "nctb":
+        kwargs["textbook_medium"] = textbook_medium
+        kwargs["curriculum_id"] = curriculum_id
+    out = retrieval.search(query, class_level, subject, **kwargs)
     return [
-        {x: c[x] for x in ("id", "chunk_ref", "book", "book_id", "class_level", "subject", "chapter_no", "chapter", "text", "sim") if x in c}
+        {
+            x: c[x]
+            for x in (
+                "id",
+                "chunk_ref",
+                "book",
+                "book_id",
+                "curriculum_id",
+                "textbook_medium",
+                "class_level",
+                "subject",
+                "chapter_no",
+                "chapter",
+                "page_start",
+                "page_end",
+                "text",
+                "sim",
+            )
+            if x in c
+        }
         for c in out
     ]
 
@@ -34,7 +64,7 @@ def list_chapters(book_id: int) -> list[dict]:
 
 @mcp.tool()
 def explain_citation(chunk_id: int) -> dict:
-    """Return the source chunk (class, subject, chapter, full text) behind a citation."""
+    """Return the source chunk (class, subject, chapter, page range, full text) behind a citation."""
     return db.get_chunk(chunk_id) or {"error": "not found"}
 
 
