@@ -1,7 +1,7 @@
 import unittest
 
 from pathshala.llm import parse_json
-from pathshala.retrieval import fts_or_query, fts_terms, rrf
+from pathshala.retrieval import fts_or_query, fts_terms, merge_neighbor_text, rrf
 
 
 class TestRRF(unittest.TestCase):
@@ -16,6 +16,15 @@ class TestRRF(unittest.TestCase):
     def test_fts_terms_strips_stopwords_and_builds_or_query(self):
         self.assertEqual(fts_terms("খাদ্যশৃঙ্খল কাকে বলে?"), ["খাদ্যশৃঙ্খল"])
         self.assertEqual(fts_or_query("How to bake a chocolate cake?"), "bake | chocolate | cake")
+
+    def test_merge_neighbor_text_expands_only_short_fragments(self):
+        short_c = {"id": 1, "text": "Chapter 3"}
+        nbr = {"text": "Diffusion is the movement of molecules."}
+        merged = merge_neighbor_text(short_c, nbr, min_chars=180)
+        self.assertIn("Chapter 3", merged["text"])
+        self.assertIn("Diffusion", merged["text"])
+        long_c = {"id": 2, "text": "A" * 200}
+        self.assertEqual(merge_neighbor_text(long_c, nbr, min_chars=180)["text"], long_c["text"])
 
 
 class TestParseJson(unittest.TestCase):

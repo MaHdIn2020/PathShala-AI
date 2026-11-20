@@ -9,7 +9,7 @@ from typing import TypedDict
 from langgraph.graph import END, StateGraph
 
 from .config import get_config
-from .text import normalize_bangla
+from .text import normalize_bangla, normalize_for_retrieval
 
 REFUSAL = "এই প্রশ্নের উত্তর পাঠ্যবইয়ে খুঁজে পাইনি।"
 REFUSAL_EN = "I could not find the answer to this question in the selected textbook."
@@ -33,15 +33,28 @@ _DISTRESS_KEYWORDS = (
     "নিজেকে শেষ",
     "মরতে চাই",
     "নিজের ক্ষতি",
+    "নিজেকে মেরে",
+    "বাঁচতে ইচ্ছা করে না",
+    "জীবন শেষ",
+    "নিজের প্রাণ",
     "suicide",
+    "suicidal",
     "kill myself",
     "self harm",
     "self-harm",
+    "hurt myself",
     "want to die",
+    "end my life",
+    "don't want to live",
+    "do not want to live",
+    "no reason to live",
     "more jete chai",
     "bachte chai na",
+    "bachte iccha kore na",
     "atmahatya",
     "nijeke shesh",
+    "nijeke mere",
+    "jibon shesh",
 )
 _PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 _CACHE: dict = {}
@@ -258,9 +271,10 @@ def build_graph(cfg, retrieve_fn, llm_fn):
         return {"query": query, "cost": cost}
 
     def retrieve_node(state: PipelineState) -> dict:
+        retrieval_q = normalize_for_retrieval(state["query"])
         chunks = _call_retrieve(
             retrieve_fn,
-            state["query"],
+            retrieval_q,
             state["class_level"],
             state.get("subject"),
             cfg,

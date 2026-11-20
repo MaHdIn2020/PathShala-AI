@@ -1,6 +1,8 @@
 import unittest
+from unittest.mock import patch
 
-from pathshala.security import RateLimiter, allowed_origins, verify_teacher_token
+from pathshala import db
+from pathshala.security import RateLimiter, allowed_origins, scrub_pii, verify_teacher_token
 
 
 class TestSecurity(unittest.TestCase):
@@ -25,6 +27,26 @@ class TestSecurity(unittest.TestCase):
         origins = allowed_origins()
         self.assertNotIn("*", origins)
         self.assertTrue(len(origins) >= 1)
+
+    def test_scrub_pii_redacts_phones_emails_and_names(self):
+        raw = "My name is Rahim and call 01712345678 or +8801812345678 or rahim@example.com"
+        clean = scrub_pii(raw)
+        self.assertNotIn("01712345678", clean)
+        self.assertNotIn("01812345678", clean)
+        self.assertNotIn("rahim@example.com", clean)
+        self.assertNotIn("Rahim", clean)
+        self.assertIn("[REDACTED_PHONE]", clean)
+        self.assertIn("[REDACTED_EMAIL]", clean)
+
+        bn_clean = scrub_pii("আমার নাম তানভীর, আমার প্রশ্ন পানি কী?")
+        self.assertNotIn("তানভীর", bn_clean)
+        self.assertIn("[REDACTED_NAME]", bn_clean)
+
+    @patch("pathshala.db.get_conn")
+    def test_distress_queries_are_never_logged_to_db(self, mock_conn):
+        res = db.log_query({"question": "আমি মরে যেতে চাই", "reason": "safety_distress"})
+        self.assertIsNone(res)
+        mock_conn.assert_not_called()
 
 
 if __name__ == "__main__":

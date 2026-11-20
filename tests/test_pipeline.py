@@ -140,6 +140,17 @@ class TestPipeline(unittest.TestCase):
         self.assertTrue(r["cached"])
         self.assertEqual(calls, [])
 
+        # Different textbook_medium or answer_language must NOT hit the previous cache entry
+        calls_diff = []
+
+        def count_llm(*a, **k):
+            calls_diff.append(1)
+            return GOOD, {"cost": 0.001}
+
+        r_en = answer("গতি কী?", 9, textbook_medium="english_version", answer_language="en", cfg=cfg, retrieve_fn=retrieve_ok, llm_fn=count_llm)
+        self.assertFalse(r_en["cached"])
+        self.assertEqual(len(calls_diff), 1)
+
     def test_distress_keyword_returns_safety_message(self):
         called = []
 

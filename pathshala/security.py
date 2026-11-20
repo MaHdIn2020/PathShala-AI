@@ -1,7 +1,24 @@
-"""Basic API security helpers: CORS origins, per-IP rate limiter, and optional teacher token auth."""
+"""API security helpers: CORS origins, per-IP rate limiter, teacher token auth, and PII scrubbing."""
 import os
+import re
 import time
 from collections import defaultdict, deque
+
+_PHONE_RE = re.compile(r"(?:\+?88[\s-]?)?01[3-9]\d{2}[\s-]?\d{6}\b")
+_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_BN_NAME_RE = re.compile(r"(আমার\s+নাম)\s+[^\s।,?!]+")
+_EN_NAME_RE = re.compile(r"\b(my\s+name\s+is|i\s+am)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?", re.IGNORECASE)
+
+
+def scrub_pii(text: str) -> str:
+    """Redact phone numbers, emails, and self-reported names before storing logs or analytics."""
+    if not text:
+        return ""
+    s = _PHONE_RE.sub("[REDACTED_PHONE]", text)
+    s = _EMAIL_RE.sub("[REDACTED_EMAIL]", s)
+    s = _BN_NAME_RE.sub(r"\1 [REDACTED_NAME]", s)
+    s = _EN_NAME_RE.sub(r"\1 [REDACTED_NAME]", s)
+    return s
 
 
 def allowed_origins() -> list[str]:

@@ -1,4 +1,4 @@
-"""Pure text utils: Bangla normalisation + chunking. No third-party deps (unit-testable)."""
+"""Pure text utils: Bangla normalisation, Banglish retrieval expansion & chunking. No third-party deps."""
 import re
 import unicodedata
 
@@ -6,6 +6,51 @@ _ZW_DROP = dict.fromkeys(map(ord, "\u200b\ufeff\u2060"), None)  # keep ZWNJ/ZWJ:
 _BN_DIGITS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 _SENT_SPLIT = re.compile(r"(?<=[।?!\.])\s+")
 _HEADING = re.compile(r"^\s*(অধ্যায়|Chapter(?![A-Za-z]))", re.IGNORECASE)  # no \b: Bangla marks are not \w
+
+_BANGLISH_MAP = {
+    "khadya shringkhol": "খাদ্যশৃঙ্খল food chain",
+    "khadya": "খাদ্য food",
+    "shringkhol": "শৃঙ্খল",
+    "saloksongshleshon": "সালোকসংশ্লেষণ photosynthesis",
+    "salok": "সালোকসংশ্লেষণ",
+    "udbhid": "উদ্ভিদ plant",
+    "prani": "প্রাণী animal",
+    "bhumi": "ভূমি মাটি soil",
+    "mati": "মাটি soil",
+    "pani": "পানি water",
+    "bayu dushon": "বায়ুদূষণ air pollution",
+    "bayu": "বায়ু air",
+    "dushon": "দূষণ pollution",
+    "kosh": "কোষ cell",
+    "kos": "কোষ cell",
+    "bapon": "ব্যাপন diffusion",
+    "obhisrobon": "অভিস্রবণ osmosis",
+    "obhisrabon": "অভিস্রবণ osmosis",
+    "proshedon": "প্রস্বেদন transpiration",
+    "poribesh": "পরিবেশ environment",
+    "bastutontro": "বাস্তুতন্ত্র ecosystem",
+    "bhognangsho": "ভগ্নাংশ fraction",
+    "borgo": "বর্গ square",
+    "ayotokhetro": "আয়তক্ষেত্র rectangle",
+    "shomikoron": "সমীকরণ equation",
+    "protibimbo": "প্রতিবিম্ব reflection",
+    "tap": "তাপ heat",
+    "bidyut": "বিদ্যুৎ electricity",
+    "chumbok": "চুম্বক magnet",
+    "shokti": "শক্তি energy",
+    "podartho": "পদার্থ matter",
+    "omlo": "অম্ল acid",
+    "khar": "ক্ষার base",
+    "lobon": "লবণ salt",
+}
+
+_SPELLING_VARIANTS = {
+    "কিভাবে": "কীভাবে",
+    "শ্রেণী": "শ্রেণি",
+    "পাখী": "পাখি",
+    "সূর্য্য": "সূর্য",
+    "বায়ু": "বায়ু",
+}
 
 
 def normalize_bangla(text: str, ascii_digits: bool = False) -> str:
@@ -18,6 +63,22 @@ def normalize_bangla(text: str, ascii_digits: bool = False) -> str:
     if ascii_digits:
         t = t.translate(_BN_DIGITS)
     return t.strip()
+
+
+def normalize_for_retrieval(text: str) -> str:
+    """Create a retrieval-normalized copy with Banglish & spelling expansions without altering original text."""
+    base = normalize_bangla(text, ascii_digits=True)
+    if not base:
+        return ""
+    low = base.lower()
+    extras = []
+    for k, v in _BANGLISH_MAP.items():
+        if re.search(rf"\b{re.escape(k)}\b", low):
+            extras.append(v)
+    for var, canon in _SPELLING_VARIANTS.items():
+        if var in base and canon not in base:
+            extras.append(canon)
+    return f"{base} {' '.join(extras)}".strip() if extras else base
 
 
 _SUBJECT_HINTS = {

@@ -2,6 +2,7 @@
 from pathlib import Path
 
 from .config import get_config
+from .security import scrub_pii
 
 
 def get_conn(cfg=None):
@@ -25,11 +26,14 @@ def apply_migrations(migrations_dir: Path | None = None, cfg=None) -> list[str]:
 
 
 def log_query(rec: dict):
+    if rec.get("reason") == "safety_distress":
+        return None
     payload = {
         "curriculum_id": "nctb",
         "textbook_medium": "bangla_version",
         "answer_language": "bn",
         **rec,
+        "question": scrub_pii(rec.get("question") or "")[:600],
     }
     try:
         with get_conn() as c, c.cursor() as cur:

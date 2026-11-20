@@ -93,22 +93,26 @@ def ask(req: AskReq):
         textbook_medium=req.textbook_medium,
         answer_language=req.answer_language,
     )
-    res["query_id"] = db.log_query(
-        {
-            "session_id": req.session_id,
-            "curriculum_id": req.curriculum_id,
-            "textbook_medium": req.textbook_medium,
-            "answer_language": req.answer_language,
-            "class_level": req.class_level,
-            "subject": req.subject,
-            "question": req.question[:600],
-            "topic": res.get("topic"),
-            "top_score": res.get("top_score"),
-            "refused": res["refused"],
-            "reason": res.get("reason"),
-            "latency_ms": res["latency_ms"],
-            "cost_usd": res["cost_usd"],
-        }
+    res["query_id"] = (
+        None
+        if res.get("reason") == "safety_distress"
+        else db.log_query(
+            {
+                "session_id": req.session_id,
+                "curriculum_id": req.curriculum_id,
+                "textbook_medium": req.textbook_medium,
+                "answer_language": req.answer_language,
+                "class_level": req.class_level,
+                "subject": req.subject,
+                "question": req.question[:600],
+                "topic": res.get("topic"),
+                "top_score": res.get("top_score"),
+                "refused": res["refused"],
+                "reason": res.get("reason"),
+                "latency_ms": res["latency_ms"],
+                "cost_usd": res["cost_usd"],
+            }
+        )
     )
     return res
 
@@ -146,22 +150,26 @@ def ask_stream(req: AskReq):
             c0 = cites[0]
             found_msg = f"পাওয়া গেছে: শ্রেণি {c0.get('class_level', req.class_level)} · {c0.get('subject') or ''} · অধ্যায় {c0.get('chapter_no') or '-'}"
             yield f"data: {json.dumps({'type': 'status', 'message': found_msg}, ensure_ascii=False)}\n\n"
-        res["query_id"] = db.log_query(
-            {
-                "session_id": req.session_id,
-                "curriculum_id": req.curriculum_id,
-                "textbook_medium": req.textbook_medium,
-                "answer_language": req.answer_language,
-                "class_level": req.class_level,
-                "subject": req.subject,
-                "question": req.question[:600],
-                "topic": res.get("topic"),
-                "top_score": res.get("top_score"),
-                "refused": res["refused"],
-                "reason": res.get("reason"),
-                "latency_ms": res["latency_ms"],
-                "cost_usd": res["cost_usd"],
-            }
+        res["query_id"] = (
+            None
+            if res.get("reason") == "safety_distress"
+            else db.log_query(
+                {
+                    "session_id": req.session_id,
+                    "curriculum_id": req.curriculum_id,
+                    "textbook_medium": req.textbook_medium,
+                    "answer_language": req.answer_language,
+                    "class_level": req.class_level,
+                    "subject": req.subject,
+                    "question": req.question[:600],
+                    "topic": res.get("topic"),
+                    "top_score": res.get("top_score"),
+                    "refused": res["refused"],
+                    "reason": res.get("reason"),
+                    "latency_ms": res["latency_ms"],
+                    "cost_usd": res["cost_usd"],
+                }
+            )
         )
         ans = res.get("answer") or ""
         step = max(24, len(ans) // 6) if ans else 24
@@ -227,22 +235,26 @@ def ask_image(req: AskImageReq):
     )
     res["transcribed_question"] = extracted_q
     res["cost_usd"] = res.get("cost_usd", 0.0) + usage.get("cost", 0.0)
-    res["query_id"] = db.log_query(
-        {
-            "session_id": req.session_id,
-            "curriculum_id": req.curriculum_id,
-            "textbook_medium": req.textbook_medium,
-            "answer_language": req.answer_language,
-            "class_level": req.class_level,
-            "subject": req.subject,
-            "question": extracted_q[:600],
-            "topic": res.get("topic"),
-            "top_score": res.get("top_score"),
-            "refused": res["refused"],
-            "reason": res.get("reason"),
-            "latency_ms": res["latency_ms"],
-            "cost_usd": res["cost_usd"],
-        }
+    res["query_id"] = (
+        None
+        if res.get("reason") == "safety_distress"
+        else db.log_query(
+            {
+                "session_id": req.session_id,
+                "curriculum_id": req.curriculum_id,
+                "textbook_medium": req.textbook_medium,
+                "answer_language": req.answer_language,
+                "class_level": req.class_level,
+                "subject": req.subject,
+                "question": extracted_q[:600],
+                "topic": res.get("topic"),
+                "top_score": res.get("top_score"),
+                "refused": res["refused"],
+                "reason": res.get("reason"),
+                "latency_ms": res["latency_ms"],
+                "cost_usd": res["cost_usd"],
+            }
+        )
     )
     return res
 

@@ -3,6 +3,7 @@ import re
 
 from . import embed as _embed
 from .config import get_config
+from .text import normalize_for_retrieval
 
 _STOP = {
     "কী", "কি", "কেন", "কীভাবে", "কিভাবে", "কাকে", "বলে", "হয়", "হয়", "করো", "বলো", "লেখো", "দাও", "কোন", "কত",
@@ -69,7 +70,8 @@ def fts_search(
     from .db import get_conn
 
     cfg = cfg or get_config()
-    terms = fts_terms(question)
+    norm_q = normalize_for_retrieval(question)
+    terms = fts_terms(norm_q)
     tsq = " | ".join(terms)
     if not tsq:
         return []
@@ -94,6 +96,33 @@ def fts_search(
     return out
 
 
+def merge_neighbor_text(chunk: dict, neighbor: dict | None, min_chars: int = 180, max_total: int = 1200) -> dict:
+    """Append adjacent same-chapter chunk text when a top chunk is only a short heading or fragment."""
+    if not neighbor:
+        return chunk
+    base = (chunk.get("text") or "").strip()
+    extra = (neighbor.get("text") or "").strip()
+    if len(base) >= min_chars or not extra or extra in base:
+        return chunk
+    combined = f"{base}\n{extra}"[:max_total]
+    return {**chunk, "text": combined}
+
+
+def _expand_short_chunks(chunks: list[dict], cur, min_chars: int = 180) -> list[dict]:
+    out = []
+    for c in chunks:
+        if len((c.get("text") or "").strip()) < min_chars and c.get("book_id") and c.get("chapter_no") is not None:
+            cur.execute(
+                "select text from chunks where textbook_id=%s and chapter_no=%s and id > %s order by id asc limit 1",
+                (c["book_id"], c["chapter_no"], c["id"]),
+            )
+            nbr = cur.fetchone()
+            out.append(merge_neighbor_text(c, nbr, min_chars=min_chars))
+        else:
+            out.append(c)
+    return out
+
+
 def hybrid_search(
     question: str,
     class_level: int,
@@ -108,9 +137,10 @@ def hybrid_search(
     from .db import get_conn
 
     cfg = cfg or get_config()
+    norm_q = normalize_for_retrieval(question)
     if cfg.embed_provider == "fts" and embed_fn is None:
         return fts_search(
-            question,
+            norm_q,
             class_level,
             subject,
             k=k,
@@ -119,15 +149,15 @@ def hybrid_search(
             textbook_medium=textbook_medium,
         )
 
-    terms = fts_terms(question)
+    terms = fts_terms(norm_q)
     tsq = " | ".join(terms)
-    qvec = _embed.to_pgvector((embed_fn or _embed.embed_query)(question))
+    qvec = _embed.to_pgvector((embed_fn or _embed.embed_query)(norm_q))
     p = {
         "curr": curriculum_id,
         "med": textbook_medium,
         "cl": class_level,
         "subj": subject,
-        "q": question,
+        "q": norm_q,
         "tsq": tsq,
         "vec": qvec,
         "k": k,
@@ -165,13 +195,13 @@ def hybrid_search(
                     rows[d["id"]] = d
                 kw_ids.append(d["id"])
 
-    fused = rrf([vec_ids, kw_ids])
-    out = []
-    for cid, score in fused:
-        d = dict(rows[cid])
-        d["rrf"] = score
-        out.append(d)
-    return out
+        fused = rrf([vec_ids, kw_ids])
+        out = []
+        for cid, score in fused:
+            d = dict(rows[cid])
+            d["rrf"] = score
+            out.append(d)
+        return (_expand_short_chunks(out[:8], cur) + out[8:]) if out else out
 
 
 def _rerank(question: str, chunks: list[dict], top: int) -> list[dict]:

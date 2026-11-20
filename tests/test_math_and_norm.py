@@ -2,7 +2,7 @@ import unittest
 
 from pathshala.math_tool import safe_eval_expr
 from pathshala.pipeline import is_distress_query, subject_min_score
-from pathshala.text import normalize_query
+from pathshala.text import normalize_for_retrieval, normalize_query
 
 
 class TestMathAndNorm(unittest.TestCase):
@@ -22,6 +22,16 @@ class TestMathAndNorm(unittest.TestCase):
         self.assertEqual(subject_min_score(None, 0.45), 0.45)
         self.assertTrue(is_distress_query("ami more jete chai"))
         self.assertTrue(is_distress_query("ami bachte chai na"))
+        self.assertTrue(is_distress_query("bachte iccha kore na"))
+        self.assertTrue(is_distress_query("don't want to live"))
+
+    def test_banglish_retrieval_normalization_preserves_and_expands(self):
+        orig = "khadya shringkhol ki?"
+        norm = normalize_for_retrieval(orig)
+        self.assertIn("khadya shringkhol", norm)
+        self.assertIn("খাদ্যশৃঙ্খল", norm)
+        self.assertIn("bapon", normalize_for_retrieval("bapon ki?"))
+        self.assertIn("diffusion", normalize_for_retrieval("bapon ki?"))
 
 
 if __name__ == "__main__":
