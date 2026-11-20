@@ -253,7 +253,7 @@ export default function Home() {
         class_level: Number(cls),
         subject: subj.trim() || null,
       });
-      const res = await fetchWithRetry(
+      let res = await fetchWithRetry(
         `${API_BASE}/ask/stream`,
         {
           method: "POST",
@@ -263,6 +263,18 @@ export default function Home() {
         25000,
         1
       );
+      if (res.status === 404 || res.status === 405) {
+        res = await fetchWithRetry(
+          `${API_BASE}/ask`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: payload,
+          },
+          25000,
+          1
+        );
+      }
       if (!res.ok) {
         throw new Error(`HTTP_${res.status}`);
       }
