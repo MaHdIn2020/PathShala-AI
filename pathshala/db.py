@@ -112,8 +112,15 @@ def topic_counts(limit: int = 50) -> list[dict]:
         return cur.fetchall()
 
 
-def format_teacher_summary(totals: dict | None, chapters: list[dict], top_questions: list[dict]) -> dict:
-    """Format SQL aggregates into teacher summary payload with safe rates and seed/real counts."""
+def format_teacher_summary(
+    totals: dict | None,
+    chapters: list[dict],
+    top_questions: list[dict],
+    concept_gaps: list[dict] | None = None,
+    misconceptions: list[dict] | None = None,
+    min_group_size: int = 3,
+) -> dict:
+    """Format SQL aggregates into teacher summary payload with rates, Concept Rescue gaps & privacy suppression."""
     t = totals or {}
     total_q = int(t.get("total_queries") or 0)
     seed_q = int(t.get("seed_queries") or 0)
@@ -152,6 +159,59 @@ def format_teacher_summary(totals: dict | None, chapters: list[dict], top_questi
         for q in top_questions
     ]
 
+    suppressed = 0
+    fmt_gaps = []
+    for g in concept_gaps or []:
+        attempts = int(g.get("attempts") or 0)
+        incorrect = int(g.get("incorrect_count") or 0)
+        seed_a = int(g.get("seed_attempts") or 0)
+        real_a = int(g.get("real_attempts") or 0)
+        uniq = int(g.get("unique_sessions") or 0)
+        if real_a > 0 and seed_a == 0 and uniq < min_group_size:
+            suppressed += 1
+            continue
+        fmt_gaps.append(
+            {
+                "curriculum_id": g.get("curriculum_id") or "nctb",
+                "textbook_medium": g.get("textbook_medium") or "bangla_version",
+                "class_level": int(g.get("class_level") or 0),
+                "subject": g.get("subject") or "general",
+                "chapter": g.get("chapter") or "",
+                "attempts": attempts,
+                "incorrect_count": incorrect,
+                "incorrect_rate": round(incorrect / attempts, 4) if attempts > 0 else 0.0,
+                "seed_attempts": seed_a,
+                "real_attempts": real_a,
+                "unique_sessions": uniq,
+                "avg_mastery": round(float(g.get("avg_mastery") or 0.5), 4),
+                "low_sample_warning": attempts < min_group_size,
+                "is_demo_data": seed_a > 0 and real_a == 0,
+            }
+        )
+
+    fmt_misc = []
+    for m in misconceptions or []:
+        cnt = int(m.get("count") or 0)
+        seed_c = int(m.get("seed_count") or 0)
+        real_c = int(m.get("real_count") or 0)
+        uniq = int(m.get("unique_sessions") or 0)
+        if real_c > 0 and seed_c == 0 and uniq < min_group_size:
+            suppressed += 1
+            continue
+        fmt_misc.append(
+            {
+                "likely_misconception": m.get("likely_misconception") or "",
+                "textbook_medium": m.get("textbook_medium") or "bangla_version",
+                "class_level": int(m.get("class_level") or 0),
+                "subject": m.get("subject") or "general",
+                "chapter": m.get("chapter") or "",
+                "count": cnt,
+                "seed_count": seed_c,
+                "real_count": real_c,
+                "is_demo_data": seed_c > 0 and real_c == 0,
+            }
+        )
+
     return {
         "total_queries": total_q,
         "seed_queries": seed_q,
@@ -161,14 +221,18 @@ def format_teacher_summary(totals: dict | None, chapters: list[dict], top_questi
         "feedback_count": fb_count,
         "helpful_count": helpful_c,
         "helpful_rate": round(helpful_c / fb_count, 4) if fb_count > 0 else 0.0,
-        "has_seed_data": seed_q > 0,
+        "has_seed_data": seed_q > 0 or any(g["seed_attempts"] > 0 for g in fmt_gaps),
+        "privacy_threshold_min_sessions": min_group_size,
+        "suppressed_small_groups": suppressed,
         "chapters": fmt_chapters,
         "top_questions": fmt_top,
+        "concept_gaps": fmt_gaps,
+        "recurring_misconceptions": fmt_misc,
     }
 
 
-def teacher_summary(limit: int = 50) -> dict:
-    """Return chapter counts, refusal & helpful rates, and top 10 repeated questions."""
+def teacher_summary(limit: int = 50, min_group_size: int = 3) -> dict:
+    """Return chapter counts, refusal & helpful rates, top questions, and Concept Rescue learning gaps."""
     with get_conn() as c, c.cursor() as cur:
         cur.execute(
             """select
@@ -220,7 +284,59 @@ def teacher_summary(limit: int = 50) -> dict:
         )
         top_questions = cur.fetchall()
 
-    return format_teacher_summary(totals, chapters, top_questions)
+        concept_gaps, misconceptions = [], []
+        try:
+            cur.execute(
+                """with m as (
+                       select curriculum_id, textbook_medium, class_level, subject, chapter,
+                              round(avg(mastery)::numeric, 4)::float as avg_mastery
+                       from session_mastery
+                       group by 1, 2, 3, 4, 5
+                   )
+                   select le.curriculum_id, le.textbook_medium, le.class_level, le.subject, le.chapter,
+                          count(*) as attempts,
+                          coalesce(sum(case when not le.is_correct then 1 else 0 end), 0) as incorrect_count,
+                          coalesce(sum(case when le.session_id = 'seed' then 1 else 0 end), 0) as seed_attempts,
+                          coalesce(sum(case when le.session_id is distinct from 'seed' then 1 else 0 end), 0) as real_attempts,
+                          count(distinct le.session_id) as unique_sessions,
+                          coalesce(max(m.avg_mastery), 0.5) as avg_mastery
+                   from learning_events le
+                   left join m on m.curriculum_id = le.curriculum_id
+                              and m.textbook_medium = le.textbook_medium
+                              and m.class_level = le.class_level
+                              and m.subject = le.subject
+                              and m.chapter = le.chapter
+                   group by 1, 2, 3, 4, 5
+                   order by incorrect_count desc, attempts desc
+                   limit %s""",
+                (limit,),
+            )
+            concept_gaps = cur.fetchall()
+
+            cur.execute(
+                """select likely_misconception, textbook_medium, class_level, subject, chapter,
+                          count(*) as count,
+                          coalesce(sum(case when session_id = 'seed' then 1 else 0 end), 0) as seed_count,
+                          coalesce(sum(case when session_id is distinct from 'seed' then 1 else 0 end), 0) as real_count,
+                          count(distinct session_id) as unique_sessions
+                   from learning_events
+                   where not is_correct and likely_misconception is not null and trim(likely_misconception) <> ''
+                   group by 1, 2, 3, 4, 5
+                   order by count desc
+                   limit 15"""
+            )
+            misconceptions = cur.fetchall()
+        except Exception:
+            concept_gaps, misconceptions = [], []
+
+    return format_teacher_summary(
+        totals,
+        chapters,
+        top_questions,
+        concept_gaps=concept_gaps,
+        misconceptions=misconceptions,
+        min_group_size=min_group_size,
+    )
 
 
 def get_chunk(chunk_id: int) -> dict | None:

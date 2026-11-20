@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -34,15 +34,30 @@ async function fetchWithRetry(
   throw lastErr;
 }
 
+interface CatalogBook {
+  id: number;
+  curriculum_id: string;
+  textbook_medium: "bangla_version" | "english_version";
+  class_level: number;
+  subject: string;
+  title: string;
+  chunk_count: number;
+  embedded_count: number;
+}
+
 interface Citation {
   chunk_id: number;
   chunk_ref?: string;
   book?: string;
+  curriculum_id?: string;
+  textbook_medium?: string;
   class_level?: number;
   subject?: string;
   chapter_no?: number;
   chapter?: string;
   page?: number | null;
+  page_start?: number | null;
+  page_end?: number | null;
   snippet?: string;
 }
 
@@ -60,6 +75,8 @@ interface AnswerResponse {
   cached: boolean;
   query_id?: number | null;
   transcribed_question?: string;
+  textbook_medium?: string;
+  answer_language?: string;
 }
 
 interface PracticeQuestion {
@@ -77,17 +94,89 @@ interface PracticeResponse {
   message?: string;
 }
 
+interface McqOption {
+  id: "A" | "B" | "C" | "D";
+  text: string;
+}
+
+interface DiagnosticCheck {
+  refused?: boolean;
+  reason?: string | null;
+  message?: string;
+  question_id: string;
+  curriculum_id: string;
+  textbook_medium: string;
+  class_level: number;
+  subject: string;
+  chapter_no?: number | null;
+  chapter: string;
+  learning_objective: string;
+  question_text: string;
+  answer_language: string;
+  options: McqOption[];
+  correct_option: "A" | "B" | "C" | "D";
+  explanation: string;
+  misconception_labels: Record<string, string>;
+  source: Citation;
+}
+
+interface MasteryChapter {
+  class_level: number;
+  subject: string;
+  chapter: string;
+  mastery: number;
+  attempts: number;
+  correct: number;
+  difficulty: string;
+}
+
+interface MasterySnapshot {
+  session_id: string;
+  indicator_label?: string;
+  chapters: MasteryChapter[];
+  weak_chapters: MasteryChapter[];
+  recommended_chapter: MasteryChapter | null;
+}
+
+interface ConceptSubmitResult {
+  is_correct: boolean;
+  selected_option: string;
+  correct_option: string;
+  feedback: string;
+  likely_misconception: string | null;
+  confidence: number | null;
+  reteach_explanation: string | null;
+  follow_up_question: DiagnosticCheck | null;
+  source: Citation;
+  attempt: {
+    mastery: number;
+    attempts: number;
+    correct: number;
+    difficulty: string;
+    duplicate?: boolean;
+  };
+  mastery: MasterySnapshot;
+}
+
 interface ChatTurn {
   id: string;
   question: string;
   classLevel: number;
   subject: string;
+  textbookMedium: "bangla_version" | "english_version";
+  answerLanguage: "bn" | "en";
   response: AnswerResponse;
   feedbackSent?: boolean;
   practice?: PracticeResponse | null;
   practiceLoading?: boolean;
   englishExplain?: string | null;
   englishLoading?: boolean;
+  diagnostic?: DiagnosticCheck | null;
+  diagnosticLoading?: boolean;
+  diagnosticResult?: ConceptSubmitResult | null;
+  diagnosticSubmitting?: boolean;
+  followUpResult?: ConceptSubmitResult | null;
+  followUpSubmitting?: boolean;
 }
 
 interface SpeechRecognitionEvent {
@@ -116,49 +205,134 @@ interface IWindow extends Window {
   webkitSpeechRecognition?: new () => SpeechRecognitionInstance;
 }
 
-const SUBJECT_OPTIONS = [
-  { value: "", label: "সকল বিষয়" },
-  { value: "bangla", label: "বাংলা" },
-  { value: "math", label: "গণিত" },
-  { value: "science", label: "বিজ্ঞান" },
-  { value: "english", label: "ইংরেজি" },
-  { value: "bgs", label: "বাংলাদেশ ও বিশ্বপরিচয়" },
-  { value: "islam", label: "ইসলাম ও নৈতিক শিক্ষা" },
-  { value: "hindu_religion", label: "হিন্দুধর্ম ও নৈতিক শিক্ষা" },
-  { value: "buddhist_religion", label: "বৌদ্ধধর্ম ও নৈতিক শিক্ষা" },
-  { value: "christian_religion", label: "খ্রিস্টধর্ম ও নৈতিক শিক্ষা" },
+const SUBJECT_LABELS: Record<string, { bn: string; en: string }> = {
+  bangla: { bn: "বাংলা", en: "Bangla" },
+  bangla_grammar: { bn: "বাংলা ব্যাকরণ", en: "Bangla Grammar" },
+  bangla_rapidreader: { bn: "সহপাঠ", en: "Bangla Rapid Reader" },
+  english: { bn: "ইংরেজি", en: "English" },
+  english_grammar: { bn: "ইংরেজি ব্যাকরণ", en: "English Grammar" },
+  math: { bn: "গণিত", en: "Mathematics" },
+  higher_math: { bn: "উচ্চতর গণিত", en: "Higher Math" },
+  science: { bn: "বিজ্ঞান", en: "Science" },
+  physics_secondary: { bn: "পদার্থবিজ্ঞান", en: "Physics" },
+  chemistry_secondary: { bn: "রসায়ন", en: "Chemistry" },
+  biology_secondary: { bn: "জীববিজ্ঞান", en: "Biology" },
+  bgs: { bn: "বাংলাদেশ ও বিশ্বপরিচয়", en: "Bangladesh & Global Studies" },
+  ict: { bn: "তথ্য ও যোগাযোগ প্রযুক্তি", en: "ICT" },
+  agriculture: { bn: "কৃষিশিক্ষা", en: "Agriculture Studies" },
+  home_science: { bn: "গার্হস্থ্য বিজ্ঞান", en: "Home Science" },
+  work_and_life: { bn: "কর্ম ও জীবনমুখী শিক্ষা", en: "Work & Life Oriented Edu." },
+  arts_and_crafts: { bn: "চারু ও কারুকলা", en: "Arts & Crafts" },
+  physical_education: { bn: "শারীরিক শিক্ষা ও স্বাস্থ্য", en: "Physical Education" },
+  islam: { bn: "ইসলাম ও নৈতিক শিক্ষা", en: "Islam & Moral Edu." },
+  hindu_religion: { bn: "হিন্দুধর্ম ও নৈতিক শিক্ষা", en: "Hinduism & Moral Edu." },
+  buddhist_religion: { bn: "বৌদ্ধধর্ম ও নৈতিক শিক্ষা", en: "Buddhism & Moral Edu." },
+  christian_religion: { bn: "খ্রিস্টধর্ম ও নৈতিক শিক্ষা", en: "Christianity & Moral Edu." },
+  accounting: { bn: "হিসাববিজ্ঞান", en: "Accounting" },
+  economics: { bn: "অর্থনীতি", en: "Economics" },
+  civics: { bn: "পৌরনীতি ও নাগরিকতা", en: "Civics & Citizenship" },
+  geography: { bn: "ভূগোল ও পরিবেশ", en: "Geography" },
+  history: { bn: "বাংলাদেশের ইতিহাস ও বিশ্বসভ্যতা", en: "History" },
+  finance: { bn: "ফিন্যান্স ও ব্যাংকিং", en: "Finance & Banking" },
+  career_education: { bn: "ক্যারিয়ার শিক্ষা", en: "Career Education" },
+};
+
+function subjectName(slug: string, uiLang: "bn" | "en"): string {
+  const entry = SUBJECT_LABELS[slug];
+  if (entry) return entry[uiLang];
+  return slug.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatPageLabel(c: Citation, uiLang: "bn" | "en"): string {
+  if (c.page_start !== null && c.page_start !== undefined) {
+    if (c.page_end && c.page_end !== c.page_start) {
+      return uiLang === "bn" ? `পৃষ্ঠা ${c.page_start}–${c.page_end}` : `pp. ${c.page_start}-${c.page_end}`;
+    }
+    return uiLang === "bn" ? `পৃষ্ঠা ${c.page_start}` : `p. ${c.page_start}`;
+  }
+  return uiLang === "bn" ? "অধ্যায়-ভিত্তিক উৎস (পৃষ্ঠা নম্বর নেই)" : "Chapter-level source (no page #)";
+}
+
+const FALLBACK_CATALOG: CatalogBook[] = [
+  ...[1, 2].flatMap((c) =>
+    ["bangla", "english", "math"].map((s, idx) => ({
+      id: c * 100 + idx,
+      curriculum_id: "nctb",
+      textbook_medium: "bangla_version" as const,
+      class_level: c,
+      subject: s,
+      title: `NCTB শ্রেণি ${c} · ${s}`,
+      chunk_count: 50,
+      embedded_count: 50,
+    }))
+  ),
+  ...[3, 4, 5].flatMap((c) =>
+    ["bangla", "math", "science", "english", "bgs", "islam", "hindu_religion", "buddhist_religion", "christian_religion"].map(
+      (s, idx) => ({
+        id: c * 100 + idx,
+        curriculum_id: "nctb",
+        textbook_medium: "bangla_version" as const,
+        class_level: c,
+        subject: s,
+        title: `NCTB শ্রেণি ${c} · ${s}`,
+        chunk_count: 100,
+        embedded_count: 100,
+      })
+    )
+  ),
+  {
+    id: 8001,
+    curriculum_id: "nctb",
+    textbook_medium: "english_version",
+    class_level: 8,
+    subject: "science",
+    title: "NCTB Class 8 · science (English Version)",
+    chunk_count: 824,
+    embedded_count: 824,
+  },
 ];
 
 const STARTER_PROMPTS = [
   {
+    medium: "english_version" as const,
+    answerLang: "bn" as const,
+    classLevel: 8,
+    subject: "science",
+    tag: "EN Version · Class 8 · Science → বাংলায় ব্যাখ্যা",
+    question: "What is diffusion and how does it work in plants?",
+  },
+  {
+    medium: "bangla_version" as const,
+    answerLang: "bn" as const,
     classLevel: 5,
     subject: "science",
-    tag: "শ্রেণি ৫ · বিজ্ঞান",
+    tag: "বাংলা ভার্সন · শ্রেণি ৫ · বিজ্ঞান",
     question: "খাদ্যশৃঙ্খল কাকে বলে?",
   },
   {
-    classLevel: 5,
-    subject: "bangla",
-    tag: "শ্রেণি ৫ · বাংলা",
-    question: "বাংলাদেশে বসবাসকারী ক্ষুদ্র নৃগোষ্ঠীর মাতৃভাষা কী কী?",
+    medium: "english_version" as const,
+    answerLang: "en" as const,
+    classLevel: 8,
+    subject: "science",
+    tag: "EN Version · Class 8 · Science → English",
+    question: "What is the difference between an acid and a base?",
   },
   {
+    medium: "bangla_version" as const,
+    answerLang: "bn" as const,
     classLevel: 5,
     subject: "bgs",
-    tag: "শ্রেণি ৫ · বাবি",
+    tag: "বাংলা ভার্সন · শ্রেণি ৫ · বাবি",
     question: "লালবাগ কেল্লা কোথায় অবস্থিত?",
-  },
-  {
-    classLevel: 3,
-    subject: "bangla",
-    tag: "শ্রেণি ৩ · বাংলা",
-    question: "আমাদের গ্রাম কবিতায় গ্রামের মানুষ কীভাবে থাকে?",
   },
 ];
 
 export default function Home() {
-  const [classLevel, setClassLevel] = useState<number>(5);
-  const [subject, setSubject] = useState<string>("");
+  const [textbookMedium, setTextbookMedium] = useState<"bangla_version" | "english_version">("english_version");
+  const [answerLanguage, setAnswerLanguage] = useState<"bn" | "en">("bn");
+  const [classLevel, setClassLevel] = useState<number>(8);
+  const [subject, setSubject] = useState<string>("science");
+  const [catalog, setCatalog] = useState<CatalogBook[]>(FALLBACK_CATALOG);
   const [question, setQuestion] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [streamPreview, setStreamPreview] = useState<string>("");
@@ -171,13 +345,7 @@ export default function Home() {
   const [uiLang, setUiLang] = useState<"bn" | "en">("bn");
   const [apiStatus, setApiStatus] = useState<"waking" | "ready" | "degraded">("waking");
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
-  const [recommendedChapter, setRecommendedChapter] = useState<{
-    chapter: string;
-    mastery: number;
-    difficulty: string;
-    class_level: number;
-    subject: string;
-  } | null>(null);
+  const [recommendedChapter, setRecommendedChapter] = useState<MasteryChapter | null>(null);
   const [weakCount, setWeakCount] = useState<number>(0);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -188,6 +356,13 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    let sid = window.localStorage.getItem("pathshala_session_id");
+    if (!sid) {
+      sid = `anon-${Math.random().toString(36).slice(2, 10)}`;
+      window.localStorage.setItem("pathshala_session_id", sid);
+    }
+    sessionIdRef.current = sid;
+
     const handleOnline = () => setIsOffline(false);
     const handleOffline = () => setIsOffline(true);
     window.addEventListener("online", handleOnline);
@@ -229,6 +404,17 @@ export default function Home() {
         if (!active) return;
         setApiStatus("degraded");
       });
+
+    fetch(`${API_BASE}/curriculum/catalog`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!active || !data?.books?.length) return;
+        setCatalog(data.books as CatalogBook[]);
+      })
+      .catch(() => {
+        // fallback catalog remains active
+      });
+
     return () => {
       active = false;
     };
@@ -238,7 +424,58 @@ export default function Home() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns, loading]);
 
-  const askQuestion = async (qText: string, cls: number, subj: string) => {
+  const availableClasses = useMemo(() => {
+    const set = new Set<number>();
+    for (const b of catalog) {
+      if (b.textbook_medium === textbookMedium) set.add(b.class_level);
+    }
+    const list = Array.from(set).sort((a, b) => a - b);
+    return list.length ? list : [1, 2, 3, 4, 5];
+  }, [catalog, textbookMedium]);
+
+  const availableSubjects = useMemo(() => {
+    const subs = catalog
+      .filter((b) => b.textbook_medium === textbookMedium && b.class_level === classLevel)
+      .map((b) => b.subject);
+    return Array.from(new Set(subs)).sort();
+  }, [catalog, textbookMedium, classLevel]);
+
+  const handleMediumChange = (med: "bangla_version" | "english_version") => {
+    setTextbookMedium(med);
+    const classesForMed = Array.from(
+      new Set(catalog.filter((b) => b.textbook_medium === med).map((b) => b.class_level))
+    ).sort((a, b) => a - b);
+    const nextClass = classesForMed.includes(classLevel)
+      ? classLevel
+      : med === "english_version" && classesForMed.includes(8)
+        ? 8
+        : classesForMed[0] ?? 5;
+    setClassLevel(nextClass);
+    const subsForClass = catalog
+      .filter((b) => b.textbook_medium === med && b.class_level === nextClass)
+      .map((b) => b.subject);
+    if (subject && !subsForClass.includes(subject)) {
+      setSubject(subsForClass.includes("science") ? "science" : "");
+    }
+  };
+
+  const handleClassChange = (cls: number) => {
+    setClassLevel(cls);
+    const subsForClass = catalog
+      .filter((b) => b.textbook_medium === textbookMedium && b.class_level === cls)
+      .map((b) => b.subject);
+    if (subject && !subsForClass.includes(subject)) {
+      setSubject("");
+    }
+  };
+
+  const askQuestion = async (
+    qText: string,
+    cls: number,
+    subj: string,
+    med: "bangla_version" | "english_version" = textbookMedium,
+    ansLang: "bn" | "en" = answerLanguage
+  ) => {
     const cleanQ = qText.trim();
     if (!cleanQ || loading) return;
 
@@ -252,6 +489,10 @@ export default function Home() {
         question: cleanQ,
         class_level: Number(cls),
         subject: subj.trim() || null,
+        session_id: sessionIdRef.current,
+        curriculum_id: "nctb",
+        textbook_medium: med,
+        answer_language: ansLang,
       });
       let res = await fetchWithRetry(
         `${API_BASE}/ask/stream`,
@@ -260,7 +501,7 @@ export default function Home() {
           headers: { "Content-Type": "application/json" },
           body: payload,
         },
-        25000,
+        30000,
         1
       );
       if (res.status === 404 || res.status === 405) {
@@ -271,7 +512,7 @@ export default function Home() {
             headers: { "Content-Type": "application/json" },
             body: payload,
           },
-          25000,
+          30000,
           1
         );
       }
@@ -314,10 +555,23 @@ export default function Home() {
       setApiStatus("ready");
       turnSeqRef.current += 1;
       const id = `t-${turnSeqRef.current}`;
-      setTurns((prev) => [...prev, { id, question: cleanQ, classLevel: cls, subject: subj, response: data }].slice(-20));
+      setTurns((prev) =>
+        [
+          ...prev,
+          {
+            id,
+            question: cleanQ,
+            classLevel: cls,
+            subject: subj,
+            textbookMedium: med,
+            answerLanguage: ansLang,
+            response: data,
+          },
+        ].slice(-20)
+      );
     } catch (err: unknown) {
       if (err instanceof Error && err.name === "AbortError") {
-        setErrorMsg("সার্ভার থেকে উত্তর আসতে বেশি সময় লাগছে (ফ্রি সার্ভার চালু হতে কয়েক সেকেন্ড লাগতে পারে)। আবার চেষ্টা করুন।");
+        setErrorMsg("সার্ভার থেকে উত্তর আসতে বেশি সময় লাগছে। আবার চেষ্টা করুন।");
       } else if (err instanceof Error && err.message.startsWith("HTTP_")) {
         setErrorMsg("সার্ভার সাময়িকভাবে ব্যস্ত আছে। কয়েক সেকেন্ড পর আবার চেষ্টা করুন।");
       } else {
@@ -326,6 +580,98 @@ export default function Home() {
     } finally {
       setStreamPreview("");
       setLoading(false);
+    }
+  };
+
+  const handleStartConceptCheck = async (turn: ChatTurn) => {
+    if (turn.diagnosticLoading) return;
+    setTurns((prev) =>
+      prev.map((t) =>
+        t.id === turn.id
+          ? { ...t, diagnosticLoading: true, diagnostic: null, diagnosticResult: null, followUpResult: null }
+          : t
+      )
+    );
+    try {
+      const topCite = turn.response.citations?.[0];
+      const res = await fetch(`${API_BASE}/concept-rescue/check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: turn.question,
+          answer: turn.response.answer,
+          class_level: turn.classLevel,
+          subject: turn.subject.trim() || topCite?.subject || null,
+          curriculum_id: "nctb",
+          textbook_medium: turn.textbookMedium,
+          answer_language: turn.answerLanguage,
+          chunk_id: topCite?.chunk_id ?? null,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP_${res.status}`);
+      const diag: DiagnosticCheck = await res.json();
+      setTurns((prev) =>
+        prev.map((t) => (t.id === turn.id ? { ...t, diagnostic: diag, diagnosticLoading: false } : t))
+      );
+    } catch {
+      setErrorMsg("ধারণা যাচাই প্রশ্ন তৈরি করা যায়নি। আবার চেষ্টা করুন।");
+      setTurns((prev) => prev.map((t) => (t.id === turn.id ? { ...t, diagnosticLoading: false } : t)));
+    }
+  };
+
+  const handleSubmitDiagnostic = async (
+    turn: ChatTurn,
+    diag: DiagnosticCheck,
+    optionId: "A" | "B" | "C" | "D",
+    isFollowUp = false
+  ) => {
+    if (isFollowUp ? turn.followUpSubmitting : turn.diagnosticSubmitting) return;
+    setTurns((prev) =>
+      prev.map((t) =>
+        t.id === turn.id
+          ? isFollowUp
+            ? { ...t, followUpSubmitting: true }
+            : { ...t, diagnosticSubmitting: true }
+          : t
+      )
+    );
+    try {
+      const eventKey = `${sessionIdRef.current}:${turn.id}:${diag.question_id}:${optionId}`;
+      const res = await fetch(`${API_BASE}/concept-rescue/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionIdRef.current,
+          diagnostic: diag,
+          selected_option: optionId,
+          event_key: eventKey,
+          answer_language: turn.answerLanguage,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP_${res.status}`);
+      const result: ConceptSubmitResult = await res.json();
+      setRecommendedChapter(result?.mastery?.recommended_chapter || null);
+      setWeakCount((result?.mastery?.weak_chapters || []).length);
+      setTurns((prev) =>
+        prev.map((t) =>
+          t.id === turn.id
+            ? isFollowUp
+              ? { ...t, followUpResult: result, followUpSubmitting: false }
+              : { ...t, diagnosticResult: result, diagnosticSubmitting: false }
+            : t
+        )
+      );
+    } catch {
+      setErrorMsg("উত্তর মূল্যায়ন করা যায়নি। আবার চেষ্টা করুন।");
+      setTurns((prev) =>
+        prev.map((t) =>
+          t.id === turn.id
+            ? isFollowUp
+              ? { ...t, followUpSubmitting: false }
+              : { ...t, diagnosticSubmitting: false }
+            : t
+        )
+      );
     }
   };
 
@@ -341,6 +687,8 @@ export default function Home() {
           subject: turn.subject || "general",
           chapter,
           correct,
+          curriculum_id: "nctb",
+          textbook_medium: turn.textbookMedium,
         }),
       });
       if (!res.ok) return;
@@ -350,6 +698,24 @@ export default function Home() {
     } catch {
       // ignore offline attempt error
     }
+  };
+
+  const handleResetSession = async () => {
+    const oldSid = sessionIdRef.current;
+    try {
+      await fetch(`${API_BASE}/session/${encodeURIComponent(oldSid)}`, { method: "DELETE" });
+    } catch {
+      // best-effort deletion
+    }
+    if (typeof window !== "undefined") {
+      const newSid = `anon-${Math.random().toString(36).slice(2, 10)}`;
+      window.localStorage.setItem("pathshala_session_id", newSid);
+      sessionIdRef.current = newSid;
+    }
+    setTurns([]);
+    setRecommendedChapter(null);
+    setWeakCount(0);
+    setErrorMsg(null);
   };
 
   const handleExplainEnglish = async (turn: ChatTurn) => {
@@ -373,13 +739,13 @@ export default function Home() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    askQuestion(question, classLevel, subject);
+    askQuestion(question, classLevel, subject, textbookMedium, answerLanguage);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      askQuestion(question, classLevel, subject);
+      askQuestion(question, classLevel, subject, textbookMedium, answerLanguage);
     }
   };
 
@@ -393,6 +759,7 @@ export default function Home() {
       setIsListening(false);
     } else {
       try {
+        recognitionRef.current.lang = answerLanguage === "en" ? "en-US" : "bn-BD";
         recognitionRef.current.start();
         setIsListening(true);
       } catch {
@@ -423,6 +790,10 @@ export default function Home() {
             mime_type: file.type || "image/jpeg",
             class_level: Number(classLevel),
             subject: subject.trim() || null,
+            session_id: sessionIdRef.current,
+            curriculum_id: "nctb",
+            textbook_medium: textbookMedium,
+            answer_language: answerLanguage,
           }),
         });
         if (!res.ok) {
@@ -432,7 +803,20 @@ export default function Home() {
         turnSeqRef.current += 1;
         const id = `t-${turnSeqRef.current}`;
         const qText = data.transcribed_question || "📷 ছবির প্রশ্ন";
-        setTurns((prev) => [...prev, { id, question: qText, classLevel, subject, response: data }].slice(-20));
+        setTurns((prev) =>
+          [
+            ...prev,
+            {
+              id,
+              question: qText,
+              classLevel,
+              subject,
+              textbookMedium,
+              answerLanguage,
+              response: data,
+            },
+          ].slice(-20)
+        );
       } catch (err: unknown) {
         setErrorMsg(err instanceof Error ? err.message : "ছবি পাঠাতে সমস্যা হয়েছে। আবার চেষ্টা করুন।");
       } finally {
@@ -454,6 +838,9 @@ export default function Home() {
           question: turn.response.topic || turn.question,
           class_level: turn.classLevel,
           subject: turn.subject.trim() || null,
+          curriculum_id: "nctb",
+          textbook_medium: turn.textbookMedium,
+          answer_language: turn.answerLanguage,
         }),
       });
       if (!res.ok) throw new Error(`অনুশীলন প্রশ্ন লোড করা যায়নি (${res.status})`);
@@ -481,19 +868,26 @@ export default function Home() {
     }
   };
 
-  const handleSpeech = (text: string) => {
+  const handleSpeech = (text: string, lang: "bn" | "en") => {
     if (!text || typeof window === "undefined" || !("speechSynthesis" in window)) return;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "bn-BD";
+    utterance.lang = lang === "en" ? "en-US" : "bn-BD";
     window.speechSynthesis.speak(utterance);
   };
 
-  const subjectLabel = SUBJECT_OPTIONS.find((s) => s.value === subject)?.label || "সকল বিষয়";
+  const subjectLabel = subject ? subjectName(subject, uiLang) : uiLang === "bn" ? "সকল বিষয়" : "All Subjects";
+  const mediumLabel =
+    textbookMedium === "english_version"
+      ? uiLang === "bn"
+        ? "English Version"
+        : "NCTB English Version"
+      : uiLang === "bn"
+        ? "বাংলা ভার্সন"
+        : "NCTB Bangla Version";
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#08080d] text-[#eef2f3]">
-      {/* Mobile Sidebar Backdrop */}
       {sidebarOpen && (
         <button
           type="button"
@@ -503,7 +897,7 @@ export default function Home() {
         />
       )}
 
-      {/* Left Sidebar (ChatGPT / Claude Style) */}
+      {/* Left Sidebar */}
       <aside
         className={`fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-white/10 bg-[#0d1117] transition-transform duration-200 md:static md:translate-x-0 ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
@@ -517,7 +911,7 @@ export default function Home() {
             <div>
               <div className="font-display text-sm font-bold tracking-tight text-white">PathShalaAI</div>
               <div className="font-mono-code text-[10px] uppercase tracking-widest text-[#00e5ff]">
-                NCTB PRIMARY · 1–5
+                NCTB · CLASSES 1–10
               </div>
             </div>
           </div>
@@ -531,7 +925,7 @@ export default function Home() {
           </button>
         </div>
 
-        <div className="p-3">
+        <div className="space-y-2 p-3">
           <button
             type="button"
             onClick={() => {
@@ -541,16 +935,25 @@ export default function Home() {
             }}
             className="flex w-full items-center justify-center gap-2 rounded-xl border border-[#00e5ff]/35 bg-[#00e5ff]/10 px-3 py-2.5 text-sm font-medium text-[#00e5ff] transition hover:bg-[#00e5ff]/20"
           >
-            <span>＋</span> নতুন আলোচনা
+            <span>＋</span> {uiLang === "bn" ? "নতুন আলোচনা" : "New Topic"}
+          </button>
+          <button
+            type="button"
+            onClick={handleResetSession}
+            className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-1.5 text-xs text-slate-400 transition hover:border-rose-400/40 hover:text-rose-200"
+          >
+            🗑 {uiLang === "bn" ? "সেশন ডেটা মুছুন" : "Clear Session Progress"}
           </button>
         </div>
 
         <div className="flex-1 overflow-y-auto px-3 py-2">
           <div className="mb-2 px-2 font-mono-code text-[10px] uppercase tracking-widest text-slate-500">
-            সাম্প্রতিক প্রশ্ন ({turns.length})
+            {uiLang === "bn" ? `সাম্প্রতিক প্রশ্ন (${turns.length})` : `Recent Questions (${turns.length})`}
           </div>
           {turns.length === 0 ? (
-            <p className="px-2 text-xs text-slate-500">তোমার করা প্রশ্নগুলো এখানে দেখা যাবে।</p>
+            <p className="px-2 text-xs text-slate-500">
+              {uiLang === "bn" ? "তোমার করা প্রশ্নগুলো এখানে দেখা যাবে।" : "Your questions will appear here."}
+            </p>
           ) : (
             <ul className="space-y-1">
               {[...turns].reverse().map((t) => (
@@ -563,7 +966,9 @@ export default function Home() {
                     }}
                     className="w-full truncate rounded-lg px-2.5 py-2 text-left text-xs text-slate-300 transition hover:bg-white/5 hover:text-white"
                   >
-                    <span className="mr-1.5 font-mono-code text-[10px] text-[#00e5ff]">C{t.classLevel}</span>
+                    <span className="mr-1.5 font-mono-code text-[10px] text-[#00e5ff]">
+                      {t.textbookMedium === "english_version" ? "EN" : "BN"}·C{t.classLevel}
+                    </span>
                     {t.question}
                   </button>
                 </li>
@@ -572,18 +977,18 @@ export default function Home() {
           )}
         </div>
 
-        <div className="border-t border-white/10 p-3 space-y-2">
+        <div className="space-y-2 border-t border-white/10 p-3">
           <Link
             href="/teacher"
             className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 text-xs font-medium text-slate-200 transition hover:border-[#00e5ff]/40 hover:bg-[#00e5ff]/10 hover:text-[#00e5ff]"
           >
-            <span>📊 শিক্ষক ড্যাশবোর্ড</span>
+            <span>📊 {uiLang === "bn" ? "শিক্ষক ড্যাশবোর্ড" : "Teacher Dashboard"}</span>
             <span className="font-mono-code text-[10px] text-slate-400">→</span>
           </Link>
           <div className="flex items-center justify-between px-2 font-mono-code text-[10px] text-slate-500">
             <span className="flex items-center gap-1.5">
               <span className={`h-1.5 w-1.5 rounded-full ${isOffline ? "bg-amber-400" : "bg-[#00e5ff]"}`} />
-              {isOffline ? "OFFLINE" : "GROUNDED RAG"}
+              {isOffline ? "OFFLINE SHELL" : "CONCEPT RESCUE"}
             </span>
             <span>CC BY 4.0</span>
           </div>
@@ -592,9 +997,8 @@ export default function Home() {
 
       {/* Main Chat Area */}
       <div className="ambient-glow flex flex-1 flex-col overflow-hidden">
-        {/* Top Header Bar */}
         <header className="flex items-center justify-between border-b border-white/10 bg-[#08080d]/80 px-4 py-3 backdrop-blur-md">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
               onClick={() => setSidebarOpen(true)}
@@ -603,21 +1007,21 @@ export default function Home() {
             >
               ☰
             </button>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
               <span className="font-display text-sm font-semibold text-white">PathShalaAI</span>
-              <span className="rounded-full border border-[#00e5ff]/30 bg-[#00e5ff]/10 px-2.5 py-0.5 font-mono-code text-[11px] text-[#00e5ff]">
-                শ্রেণি {classLevel} · {subjectLabel}
+              <span className="truncate rounded-full border border-[#00e5ff]/30 bg-[#00e5ff]/10 px-2.5 py-0.5 font-mono-code text-[11px] text-[#00e5ff]">
+                {mediumLabel} · {uiLang === "bn" ? `শ্রেণি ${classLevel}` : `Class ${classLevel}`} · {subjectLabel}
               </span>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={() => setUiLang((l) => (l === "bn" ? "en" : "bn"))}
               aria-label="Toggle UI language"
               className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 font-mono-code text-[11px] text-slate-200 transition hover:border-[#00e5ff]/40 hover:text-[#00e5ff]"
             >
-              {uiLang === "bn" ? "EN" : "বাংলা"}
+              {uiLang === "bn" ? "UI: EN" : "UI: বাংলা"}
             </button>
             <Link
               href="/teacher"
@@ -630,7 +1034,7 @@ export default function Home() {
 
         {isOffline && (
           <div role="alert" className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-center text-xs text-amber-200">
-            ইন্টারনেট সংযোগ বিচ্ছিন্ন রয়েছে। নতুন প্রশ্ন করতে অনলাইনে আসুন—পূর্বের উত্তরগুলো নিচে দেখা যাবে।
+            ইন্টারনেট সংযোগ বিচ্ছিন্ন রয়েছে (Offline App Shell)। নতুন AI উত্তরের জন্য অনলাইন সংযোগ প্রয়োজন—আগের উত্তরগুলো নিচে দেখা যাবে।
           </div>
         )}
 
@@ -642,15 +1046,16 @@ export default function Home() {
 
         {!isOffline && apiStatus === "degraded" && (
           <div role="status" aria-live="polite" className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-center text-xs text-amber-200">
-            সার্ভার এখন জেগে উঠছে বা ব্যস্ত আছে—প্রশ্ন করলে স্বয়ংক্রিয়ভাবে আবার চেষ্টা করা হবে।
+            সার্ভার এখন ব্যস্ত বা জেগে উঠছে—প্রশ্ন করলে স্বয়ংক্রিয়ভাবে আবার চেষ্টা করা হবে।
           </div>
         )}
 
         {recommendedChapter && (
           <div className="border-b border-[#00e5ff]/20 bg-[#0d1117] px-4 py-2 text-center text-xs text-slate-200">
-            পরবর্তী সুপারিশকৃত অধ্যায়: <span className="font-semibold text-[#00e5ff]">{recommendedChapter.chapter}</span>{" "}
-            (দক্ষতা {Math.round(recommendedChapter.mastery * 100)}% · ধাপ: {recommendedChapter.difficulty}
-            {weakCount > 0 ? ` · দুর্বল অধ্যায়: ${weakCount}` : ""})
+            অনুশীলন অগ্রগতি: <span className="font-semibold text-[#00e5ff]">{recommendedChapter.chapter}</span> ·{" "}
+            আনুমানিক অনুশীলন দক্ষতা (EWMA): <span className="font-bold text-white">{Math.round(recommendedChapter.mastery * 100)}%</span>{" "}
+            ({recommendedChapter.correct}/{recommendedChapter.attempts} সঠিক · ধাপ: {recommendedChapter.difficulty}
+            {weakCount > 0 ? ` · পুনরায় চর্চা প্রয়োজন: ${weakCount}টি অধ্যায়` : ""})
           </div>
         )}
 
@@ -658,28 +1063,28 @@ export default function Home() {
         <main className="flex-1 overflow-y-auto px-4 py-6">
           <div className="mx-auto max-w-3xl space-y-6">
             {turns.length === 0 && !loading ? (
-              <div className="flex flex-col items-center justify-center py-10 text-center md:py-16">
+              <div className="flex flex-col items-center justify-center py-8 text-center md:py-14">
                 <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-[#00e5ff]/30 bg-[#00e5ff]/10 px-3.5 py-1 font-mono-code text-[11px] uppercase tracking-widest text-[#00e5ff]">
                   <span className="h-1.5 w-1.5 rounded-full bg-[#00e5ff]" />
-                  NCTB Textbook Grounded Tutor
+                  Concept Rescue · NCTB Grounded Tutor
                 </div>
                 <h1 className="font-display text-3xl font-bold tracking-tight text-white md:text-5xl">
-                  {uiLang === "bn" ? "আজ কী শিখতে চাও?" : "What would you like to learn today?"}
+                  {uiLang === "bn" ? "সঠিক পাঠ্যবই থেকে ধারণা উদ্ধার করো" : "Learn the concept, not just the answer"}
                 </h1>
                 <p className="mt-3 max-w-xl text-sm leading-relaxed text-[#8b94a3] md:text-base">
                   {uiLang === "bn"
-                    ? "১ম থেকে ৫ম শ্রেণির এনসিটিবি পাঠ্যবই থেকে যেকোনো প্রশ্ন করো—লিখে, মুখে বলে বা পাতার ছবি তুলে। প্রতিটি উত্তর আসবে অধ্যায়ের প্রমাণসহ।"
-                    : "Ask any question from NCTB Classes 1–5 textbooks by text, voice, or photo. Every answer is grounded with chapter citations—or an honest refusal if not in the book."}
+                    ? "NCTB বাংলা বা English Version পাঠ্যবই বেছে নাও, নিজের পছন্দের ভাষায় ব্যাখ্যা পড়ো, এবং Concept Rescue কুইজের মাধ্যমে ভুল ধারণা শনাক্ত করে তা ঠিক করো।"
+                    : "Choose your exact NCTB Bangla or English Version textbook, get explanations in your preferred language, and fix likely misconceptions with Concept Rescue."}
                 </p>
-                <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[11px] font-mono-code text-slate-300">
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2 font-mono-code text-[11px] text-slate-300">
                   <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1">
-                    7,081 NCTB chunks
+                    {catalog.length} NCTB Books (Bangla + English Version)
                   </span>
                   <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-emerald-300">
-                    100% off-syllabus refusal (32/32)
+                    Strict Version Isolation
                   </span>
                   <span className="rounded-full border border-[#00e5ff]/30 bg-[#00e5ff]/10 px-3 py-1 text-[#00e5ff]">
-                    71.6% citation · 69.0% acc (n=187)
+                    Concept Rescue Loop
                   </span>
                 </div>
 
@@ -689,9 +1094,11 @@ export default function Home() {
                       key={idx}
                       type="button"
                       onClick={() => {
+                        setTextbookMedium(item.medium);
+                        setAnswerLanguage(item.answerLang);
                         setClassLevel(item.classLevel);
                         setSubject(item.subject);
-                        askQuestion(item.question, item.classLevel, item.subject);
+                        askQuestion(item.question, item.classLevel, item.subject, item.medium, item.answerLang);
                       }}
                       className="group rounded-2xl border border-white/10 bg-[#0d1117]/90 p-4 text-left transition hover:border-[#00e5ff]/50 hover:bg-[#111827]"
                     >
@@ -709,14 +1116,20 @@ export default function Home() {
               turns.map((turn) => {
                 const resp = turn.response;
                 const activeCiteId = expandedCite[turn.id] ?? null;
+                const diag = turn.diagnostic;
+                const dRes = turn.diagnosticResult;
+                const fuQ = dRes?.follow_up_question;
+                const fuRes = turn.followUpResult;
                 return (
                   <article key={turn.id} id={`turn-${turn.id}`} className="space-y-4">
                     {/* User Bubble */}
                     <div className="flex justify-end">
                       <div className="max-w-[85%] rounded-2xl rounded-tr-sm border border-white/10 bg-[#161d2b] px-4 py-3 text-sm text-white shadow-sm">
                         <div className="mb-1 font-mono-code text-[10px] text-[#00e5ff]">
-                          শ্রেণি {turn.classLevel}
-                          {turn.subject ? ` · ${turn.subject}` : ""}
+                          {turn.textbookMedium === "english_version" ? "NCTB EN Version" : "NCTB বাংলা ভার্সন"} · শ্রেণি{" "}
+                          {turn.classLevel}
+                          {turn.subject ? ` · ${subjectName(turn.subject, uiLang)}` : ""} ·{" "}
+                          {turn.answerLanguage === "en" ? "Answer: EN" : "ব্যাখ্যা: বাংলা"}
                         </div>
                         <p className="whitespace-pre-line leading-relaxed">{turn.question}</p>
                       </div>
@@ -737,13 +1150,15 @@ export default function Home() {
                         ) : resp.refused ? (
                           <div role="status" className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-4">
                             <div className="mb-1 font-display text-sm font-semibold text-amber-300">
-                              পাঠ্যবইয়ে পাওয়া যায়নি
+                              {resp.reason === "unavailable_curriculum"
+                                ? "নির্বাচিত পাঠ্যবই উপলব্ধ নয়"
+                                : "পাঠ্যবইয়ে পাওয়া যায়নি"}
                             </div>
                             <p className="text-sm text-amber-100/90">
                               {resp.answer || "এই প্রশ্নের উত্তর পাঠ্যবইয়ে খুঁজে পাইনি।"}
                             </p>
                             <p className="mt-2 text-xs text-amber-200/70">
-                              পরামর্শ: সঠিক শ্রেণি ও বিষয় নির্বাচন করে বা অধ্যায়ের মূল শব্দ দিয়ে পুনরায় জিজ্ঞাসা করো।
+                              পরামর্শ: সঠিক ভার্সন, শ্রেণি ও বিষয় নির্বাচন করে পুনরায় জিজ্ঞাসা করো।
                             </p>
                           </div>
                         ) : (
@@ -768,11 +1183,16 @@ export default function Home() {
                             {resp.citations && resp.citations.length > 0 && (
                               <div className="pt-1">
                                 <div className="mb-2 font-mono-code text-[10px] uppercase tracking-widest text-slate-400">
-                                  উৎস ও প্রমাণ (Citations)
+                                  যাচাইকৃত পাঠ্যবই উৎস (Verified Citations)
                                 </div>
                                 <div className="flex flex-wrap gap-2">
                                   {resp.citations.map((c) => {
                                     const isOpen = activeCiteId === c.chunk_id;
+                                    const medTag = c.textbook_medium === "english_version" ? "EN" : "BN";
+                                    const pgTag =
+                                      c.page_start !== null && c.page_start !== undefined
+                                        ? ` · p.${c.page_start}${c.page_end && c.page_end !== c.page_start ? `-${c.page_end}` : ""}`
+                                        : "";
                                     return (
                                       <button
                                         key={c.chunk_id}
@@ -790,10 +1210,11 @@ export default function Home() {
                                             : "border-white/15 bg-white/[0.03] text-slate-300 hover:border-[#00e5ff]/50 hover:text-white"
                                         }`}
                                       >
-                                        {c.class_level ? `শ্রেণি ${c.class_level}` : ""}
+                                        [{medTag}] {c.class_level ? `Class ${c.class_level}` : ""}
                                         {c.subject ? ` · ${c.subject}` : ""}
-                                        {c.chapter_no ? ` · অধ্যায় ${c.chapter_no}` : ""}
+                                        {c.chapter_no ? ` · Ch ${c.chapter_no}` : ""}
                                         {c.chapter ? `: ${c.chapter}` : ""}
+                                        {pgTag}
                                       </button>
                                     );
                                   })}
@@ -801,18 +1222,197 @@ export default function Home() {
 
                                 {activeCiteId !== null && (
                                   <div className="mt-3 rounded-xl border border-[#00e5ff]/30 bg-[#00e5ff]/[0.06] p-3.5 text-xs text-slate-200">
-                                    <div className="mb-1 font-mono-code text-[10px] uppercase tracking-wider text-[#00e5ff]">
-                                      পাঠ্যবইয়ের মূল অংশ (
-                                      {resp.citations.find((c) => c.chunk_id === activeCiteId)?.chunk_ref || `#${activeCiteId}`}
-                                      )
-                                    </div>
-                                    <p className="whitespace-pre-line leading-relaxed text-slate-200">
-                                      {resp.citations.find((c) => c.chunk_id === activeCiteId)?.snippet || "উদ্ধৃতি পাওয়া যায়নি"}
-                                    </p>
+                                    {(() => {
+                                      const activeC = resp.citations.find((c) => c.chunk_id === activeCiteId);
+                                      return (
+                                        <>
+                                          <div className="mb-1 flex flex-wrap items-center justify-between gap-2 font-mono-code text-[10px] uppercase tracking-wider text-[#00e5ff]">
+                                            <span>
+                                              {activeC?.book || "NCTB"} ({activeC?.chunk_ref || `#${activeCiteId}`})
+                                            </span>
+                                            <span>{activeC ? formatPageLabel(activeC, uiLang) : ""}</span>
+                                          </div>
+                                          <p className="whitespace-pre-line leading-relaxed text-slate-200">
+                                            {activeC?.snippet || "উদ্ধৃতি পাওয়া যায়নি"}
+                                          </p>
+                                        </>
+                                      );
+                                    })()}
                                   </div>
                                 )}
                               </div>
                             )}
+
+                            {/* Concept Rescue Interactive Card */}
+                            <div className="mt-3 rounded-xl border border-[#00e5ff]/25 bg-[#08080d]/85 p-4 space-y-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <div className="font-mono-code text-[11px] uppercase tracking-wider text-[#00e5ff]">
+                                    Concept Rescue · ধারণা যাচাই ও উদ্ধার
+                                  </div>
+                                  <p className="text-xs text-slate-400">
+                                    {uiLang === "bn"
+                                      ? "বিষয়টি সত্যি বুঝেছ কি না তা যাচাই করো—ভুল হলে সহজ ভাষায় নতুন উদাহরণ পাবে।"
+                                      : "Check your understanding—if missed, get a likely misconception diagnosis and simpler re-explanation."}
+                                  </p>
+                                </div>
+                                {!diag && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStartConceptCheck(turn)}
+                                    disabled={turn.diagnosticLoading}
+                                    className="rounded-xl bg-[#00e5ff] px-3.5 py-2 font-display text-xs font-bold text-[#001318] transition hover:bg-[#33ecff] disabled:opacity-50"
+                                  >
+                                    {turn.diagnosticLoading
+                                      ? "প্রশ্ন তৈরি হচ্ছে..."
+                                      : "🎯 ধারণা যাচাই করো (Concept Check)"}
+                                  </button>
+                                )}
+                              </div>
+
+                              {diag && diag.refused && (
+                                <p className="text-xs text-amber-300">
+                                  {diag.message || "এই অংশের জন্য যাচাই প্রশ্ন তৈরি করা যায়নি।"}
+                                </p>
+                              )}
+
+                              {diag && !diag.refused && (
+                                <div className="space-y-3 border-t border-white/10 pt-3">
+                                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono-code text-slate-400">
+                                    <span>Objective: {diag.learning_objective}</span>
+                                    <span>{formatPageLabel(diag.source, uiLang)}</span>
+                                  </div>
+                                  <div className="text-sm font-medium text-white">{diag.question_text}</div>
+                                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                    {diag.options.map((opt) => {
+                                      const picked = dRes?.selected_option === opt.id;
+                                      const isRight = dRes && opt.id === dRes.correct_option;
+                                      let cls =
+                                        "border-white/10 bg-[#0d1117] text-slate-200 hover:border-[#00e5ff]/50";
+                                      if (dRes) {
+                                        if (isRight) {
+                                          cls = "border-emerald-400/60 bg-emerald-500/15 text-emerald-200";
+                                        } else if (picked && !dRes.is_correct) {
+                                          cls = "border-rose-400/60 bg-rose-500/15 text-rose-200";
+                                        } else {
+                                          cls = "border-white/5 bg-[#0d1117]/50 text-slate-500";
+                                        }
+                                      }
+                                      return (
+                                        <button
+                                          key={opt.id}
+                                          type="button"
+                                          disabled={Boolean(dRes) || Boolean(turn.diagnosticSubmitting)}
+                                          onClick={() => handleSubmitDiagnostic(turn, diag, opt.id, false)}
+                                          className={`rounded-xl border px-3 py-2.5 text-left text-xs transition ${cls}`}
+                                        >
+                                          <span className="mr-2 font-mono-code font-bold text-[#00e5ff]">
+                                            {opt.id}.
+                                          </span>
+                                          {opt.text}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+
+                                  {turn.diagnosticSubmitting && (
+                                    <p className="text-xs text-[#00e5ff]">উত্তর যাচাই ও বিশ্লেষণ করা হচ্ছে...</p>
+                                  )}
+
+                                  {dRes && (
+                                    <div className="space-y-3 rounded-xl border border-white/10 bg-[#0d1117] p-3.5 text-xs">
+                                      <div
+                                        className={`font-semibold ${
+                                          dRes.is_correct ? "text-emerald-300" : "text-amber-300"
+                                        }`}
+                                      >
+                                        {dRes.feedback}
+                                      </div>
+
+                                      {!dRes.is_correct && dRes.likely_misconception && (
+                                        <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 text-amber-100">
+                                          <div className="mb-1 font-mono-code text-[10px] uppercase tracking-wider text-amber-300">
+                                            সম্ভাব্য ভুল ধারণা (Likely Misconception
+                                            {dRes.confidence ? ` · ~${Math.round(dRes.confidence * 100)}%` : ""})
+                                          </div>
+                                          <p>{dRes.likely_misconception}</p>
+                                        </div>
+                                      )}
+
+                                      {!dRes.is_correct && dRes.reteach_explanation && (
+                                        <div className="rounded-lg border border-[#00e5ff]/30 bg-[#00e5ff]/[0.07] p-3 text-slate-100">
+                                          <div className="mb-1 font-mono-code text-[10px] uppercase tracking-wider text-[#00e5ff]">
+                                            সহজ ভাষায় পুনরায় ব্যাখ্যা (Grounded Re-teach ·{" "}
+                                            {formatPageLabel(dRes.source, uiLang)})
+                                          </div>
+                                          <p className="leading-relaxed">{dRes.reteach_explanation}</p>
+                                        </div>
+                                      )}
+
+                                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/10 bg-[#08080d]/70 px-3 py-2">
+                                        <span className="text-slate-300">
+                                          আনুমানিক অনুশীলন দক্ষতা (Estimated Practice Mastery):
+                                        </span>
+                                        <span className="font-mono-code font-bold text-[#00e5ff]">
+                                          {Math.round(dRes.attempt.mastery * 100)}% ({dRes.attempt.correct}/
+                                          {dRes.attempt.attempts} · {dRes.attempt.difficulty})
+                                        </span>
+                                      </div>
+
+                                      {fuQ && (
+                                        <div className="space-y-2 border-t border-white/10 pt-3">
+                                          <div className="font-mono-code text-[10px] uppercase tracking-wider text-[#00e5ff]">
+                                            নতুন অনুশীলন প্রশ্ন (Fresh Practice · Same Objective)
+                                          </div>
+                                          <div className="text-sm font-medium text-white">{fuQ.question_text}</div>
+                                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                            {fuQ.options.map((opt) => {
+                                              const picked = fuRes?.selected_option === opt.id;
+                                              const isRight = fuRes && opt.id === fuRes.correct_option;
+                                              let cls =
+                                                "border-white/10 bg-[#08080d] text-slate-200 hover:border-[#00e5ff]/50";
+                                              if (fuRes) {
+                                                if (isRight) {
+                                                  cls = "border-emerald-400/60 bg-emerald-500/15 text-emerald-200";
+                                                } else if (picked && !fuRes.is_correct) {
+                                                  cls = "border-rose-400/60 bg-rose-500/15 text-rose-200";
+                                                } else {
+                                                  cls = "border-white/5 bg-[#08080d]/40 text-slate-500";
+                                                }
+                                              }
+                                              return (
+                                                <button
+                                                  key={opt.id}
+                                                  type="button"
+                                                  disabled={Boolean(fuRes) || Boolean(turn.followUpSubmitting)}
+                                                  onClick={() => handleSubmitDiagnostic(turn, fuQ, opt.id, true)}
+                                                  className={`rounded-xl border px-3 py-2 text-left text-xs transition ${cls}`}
+                                                >
+                                                  <span className="mr-2 font-mono-code font-bold text-[#00e5ff]">
+                                                    {opt.id}.
+                                                  </span>
+                                                  {opt.text}
+                                                </button>
+                                              );
+                                            })}
+                                          </div>
+                                          {fuRes && (
+                                            <div className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-2.5 text-emerald-100">
+                                              <p className="font-medium">{fuRes.feedback}</p>
+                                              <p className="mt-1 font-mono-code text-[11px] text-[#00e5ff]">
+                                                নতুন আনুমানিক অনুশীলন দক্ষতা:{" "}
+                                                {Math.round(fuRes.attempt.mastery * 100)}% ({fuRes.attempt.correct}/
+                                                {fuRes.attempt.attempts})
+                                              </p>
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
 
                             {/* Practice Section */}
                             {turn.practice && (
@@ -889,7 +1489,7 @@ export default function Home() {
                               <div className="flex flex-wrap items-center gap-2">
                                 <button
                                   type="button"
-                                  onClick={() => handleSpeech(resp.answer)}
+                                  onClick={() => handleSpeech(resp.answer, turn.answerLanguage)}
                                   aria-label="উত্তর পড়ে শোনান"
                                   className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 transition hover:border-[#00e5ff]/40 hover:text-white"
                                 >
@@ -902,17 +1502,19 @@ export default function Home() {
                                   aria-label="অনুশীলন প্রশ্ন তৈরি করুন"
                                   className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 transition hover:border-[#00e5ff]/40 hover:text-[#00e5ff] disabled:opacity-50"
                                 >
-                                  {turn.practiceLoading ? "তৈরি হচ্ছে..." : "📝 অনুশীলন"}
+                                  {turn.practiceLoading ? "তৈরি হচ্ছে..." : "📝 অতিরিক্ত প্রশ্ন"}
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleExplainEnglish(turn)}
-                                  disabled={turn.englishLoading || Boolean(turn.englishExplain)}
-                                  aria-label="Explain in English"
-                                  className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 transition hover:border-[#00e5ff]/40 hover:text-[#00e5ff] disabled:opacity-50"
-                                >
-                                  {turn.englishLoading ? "Translating..." : "🌐 Explain in English"}
-                                </button>
+                                {turn.answerLanguage === "bn" && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleExplainEnglish(turn)}
+                                    disabled={turn.englishLoading || Boolean(turn.englishExplain)}
+                                    aria-label="Explain in English"
+                                    className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 transition hover:border-[#00e5ff]/40 hover:text-[#00e5ff] disabled:opacity-50"
+                                  >
+                                    {turn.englishLoading ? "Translating..." : "🌐 Explain in English"}
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   onClick={() => handleFeedback(turn, true)}
@@ -974,14 +1576,23 @@ export default function Home() {
             <div className="rounded-2xl border border-white/15 bg-[#0d1117] p-2.5 shadow-lg transition focus-within:border-[#00e5ff]/60">
               <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-white/5 pb-2">
                 <select
+                  aria-label="পাঠ্যবইয়ের মাধ্যম নির্বাচন করুন"
+                  value={textbookMedium}
+                  onChange={(e) => handleMediumChange(e.target.value as "bangla_version" | "english_version")}
+                  className="rounded-lg border border-[#00e5ff]/30 bg-[#111827] px-2.5 py-1 text-xs font-medium text-[#00e5ff] focus:border-[#00e5ff] focus:outline-none"
+                >
+                  <option value="bangla_version">পাঠ্যবই: বাংলা ভার্সন</option>
+                  <option value="english_version">Textbook: English Version</option>
+                </select>
+                <select
                   aria-label="শ্রেণি নির্বাচন করুন"
                   value={classLevel}
-                  onChange={(e) => setClassLevel(Number(e.target.value))}
+                  onChange={(e) => handleClassChange(Number(e.target.value))}
                   className="rounded-lg border border-white/10 bg-[#111827] px-2.5 py-1 text-xs font-medium text-slate-200 focus:border-[#00e5ff] focus:outline-none"
                 >
-                  {[1, 2, 3, 4, 5].map((c) => (
+                  {availableClasses.map((c) => (
                     <option key={c} value={c}>
-                      শ্রেণি {c}
+                      {c === 9 ? "শ্রেণি ৯–১০ (SSC)" : `শ্রেণি ${c}`}
                     </option>
                   ))}
                 </select>
@@ -991,11 +1602,21 @@ export default function Home() {
                   onChange={(e) => setSubject(e.target.value)}
                   className="rounded-lg border border-white/10 bg-[#111827] px-2.5 py-1 text-xs font-medium text-slate-200 focus:border-[#00e5ff] focus:outline-none"
                 >
-                  {SUBJECT_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
+                  <option value="">{uiLang === "bn" ? "সকল বিষয়" : "All Subjects"}</option>
+                  {availableSubjects.map((slug) => (
+                    <option key={slug} value={slug}>
+                      {subjectName(slug, uiLang)}
                     </option>
                   ))}
+                </select>
+                <select
+                  aria-label="ব্যাখ্যার ভাষা নির্বাচন করুন"
+                  value={answerLanguage}
+                  onChange={(e) => setAnswerLanguage(e.target.value as "bn" | "en")}
+                  className="rounded-lg border border-white/10 bg-[#111827] px-2.5 py-1 text-xs font-medium text-emerald-300 focus:border-[#00e5ff] focus:outline-none"
+                >
+                  <option value="bn">ব্যাখ্যার ভাষা: বাংলা</option>
+                  <option value="en">Answer Lang: English</option>
                 </select>
               </div>
 
@@ -1003,7 +1624,11 @@ export default function Home() {
                 <textarea
                   id="question-input"
                   rows={2}
-                  placeholder="পাঠ্যবই থেকে যেকোনো প্রশ্ন লিখো... (Enter চাপলে উত্তর আসবে)"
+                  placeholder={
+                    answerLanguage === "en"
+                      ? "Ask a question from your selected NCTB textbook... (Press Enter)"
+                      : "নির্বাচিত পাঠ্যবই থেকে যেকোনো প্রশ্ন লিখো (বাংলা, English বা Banglish)... Enter চাপো"
+                  }
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   onKeyDown={handleKeyDown}
@@ -1016,7 +1641,7 @@ export default function Home() {
                     onClick={toggleListening}
                     aria-label="মুখে প্রশ্ন বলুন"
                     aria-pressed={isListening}
-                    title="মুখে বলো (বাংলা)"
+                    title="মুখে বলো"
                     className={`rounded-xl border px-2.5 py-2 text-xs transition ${
                       isListening
                         ? "animate-pulse border-rose-400 bg-rose-500/20 text-rose-200"
@@ -1055,7 +1680,7 @@ export default function Home() {
               </div>
             </div>
             <p className="mt-2 text-center font-mono-code text-[10px] text-slate-500">
-              এআই ভুল করতে পারে — এনসিটিবি পাঠ্যবই-ই চূড়ান্ত কর্তৃপক্ষ · কোনো ব্যক্তিগত তথ্য বা ছবি সংরক্ষিত হয় না
+              কোনো অ্যাকাউন্ট বা ব্যক্তিগত তথ্য (নাম/ফোন) নেওয়া হয় না · আপলোড ছবি সংরক্ষিত হয় না · এআই শুধু সহায়ক, চূড়ান্ত কর্তৃপক্ষ NCTB পাঠ্যবই
             </p>
           </form>
         </div>

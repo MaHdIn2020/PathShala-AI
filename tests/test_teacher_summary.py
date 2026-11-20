@@ -63,6 +63,67 @@ class TeacherSummaryTest(unittest.TestCase):
         self.assertEqual(res.json()["total_queries"], 5)
         self.assertTrue(res.json()["has_seed_data"])
 
+    def test_concept_gaps_and_small_cohort_privacy_suppression(self):
+        gaps = [
+            {
+                "curriculum_id": "nctb",
+                "textbook_medium": "english_version",
+                "class_level": 8,
+                "subject": "science",
+                "chapter": "Diffusion, Osmosis and Transpiration",
+                "attempts": 12,
+                "incorrect_count": 5,
+                "seed_attempts": 12,
+                "real_attempts": 0,
+                "unique_sessions": 4,
+                "avg_mastery": 0.48,
+            },
+            {
+                "curriculum_id": "nctb",
+                "textbook_medium": "bangla_version",
+                "class_level": 5,
+                "subject": "math",
+                "chapter": "ভগ্নাংশ",
+                "attempts": 2,
+                "incorrect_count": 2,
+                "seed_attempts": 0,
+                "real_attempts": 2,
+                "unique_sessions": 1,
+                "avg_mastery": 0.25,
+            },
+        ]
+        misc = [
+            {
+                "likely_misconception": "Likely misconception: confusing diffusion with osmosis",
+                "textbook_medium": "english_version",
+                "class_level": 8,
+                "subject": "science",
+                "chapter": "Diffusion, Osmosis and Transpiration",
+                "count": 4,
+                "seed_count": 4,
+                "real_count": 0,
+                "unique_sessions": 4,
+            },
+            {
+                "likely_misconception": "Private single student misconception",
+                "textbook_medium": "bangla_version",
+                "class_level": 5,
+                "subject": "math",
+                "chapter": "ভগ্নাংশ",
+                "count": 1,
+                "seed_count": 0,
+                "real_count": 1,
+                "unique_sessions": 1,
+            },
+        ]
+        out = format_teacher_summary(None, [], [], concept_gaps=gaps, misconceptions=misc, min_group_size=3)
+        self.assertEqual(len(out["concept_gaps"]), 1)
+        self.assertEqual(out["concept_gaps"][0]["textbook_medium"], "english_version")
+        self.assertAlmostEqual(out["concept_gaps"][0]["incorrect_rate"], round(5 / 12, 4))
+        self.assertTrue(out["concept_gaps"][0]["is_demo_data"])
+        self.assertEqual(len(out["recurring_misconceptions"]), 1)
+        self.assertEqual(out["suppressed_small_groups"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
