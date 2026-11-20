@@ -8,7 +8,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import db, llm, mastery, pipeline, retrieval
+from . import concept_rescue, db, llm, mastery, pipeline, retrieval
 from .config import get_config
 from .security import RateLimiter, allowed_origins, verify_teacher_token
 
@@ -273,19 +273,92 @@ class PracticeAttemptReq(BaseModel):
     subject: str | None = None
     chapter: str = Field(min_length=1, max_length=200)
     correct: bool
+    curriculum_id: str = "nctb"
+    textbook_medium: str = "bangla_version"
+    event_key: str | None = None
 
 
 @app.post("/practice/attempt")
 def practice_attempt(req: PracticeAttemptReq):
     """Update anonymous session EWMA mastery for a chapter after a practice answer."""
-    updated = mastery.record_attempt(req.session_id, req.class_level, req.subject or "general", req.chapter, req.correct)
-    snap = mastery.get_session_mastery(req.session_id)
+    updated = mastery.record_attempt(
+        req.session_id,
+        req.class_level,
+        req.subject or "general",
+        req.chapter,
+        req.correct,
+        curriculum_id=req.curriculum_id,
+        textbook_medium=req.textbook_medium,
+        event_key=req.event_key,
+        use_db=True,
+    )
+    snap = mastery.get_session_mastery(req.session_id, use_db=True)
     return {"updated": updated, "mastery": snap}
 
 
 @app.get("/mastery")
 def get_mastery(session_id: str = "anon"):
-    return mastery.get_session_mastery(session_id)
+    return mastery.get_session_mastery(session_id, use_db=True)
+
+
+class ConceptCheckReq(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    answer: str = Field(default="", max_length=4000)
+    class_level: int = Field(ge=1, le=12)
+    subject: str | None = None
+    curriculum_id: str = "nctb"
+    textbook_medium: str = "bangla_version"
+    answer_language: str = "bn"
+    chunk_id: int | None = None
+    learning_objective: str | None = None
+    exclude_questions: list[str] = Field(default_factory=list)
+
+
+@app.post("/concept-rescue/check")
+def concept_rescue_check(req: ConceptCheckReq):
+    """Generate a grounded diagnostic MCQ for the student's current concept."""
+    return concept_rescue.generate_diagnostic_check(
+        req.question,
+        req.answer,
+        req.class_level,
+        req.subject,
+        curriculum_id=req.curriculum_id,
+        textbook_medium=req.textbook_medium,
+        answer_language=req.answer_language,
+        chunk_id=req.chunk_id,
+        learning_objective=req.learning_objective,
+        exclude_questions=req.exclude_questions,
+    )
+
+
+class ConceptSubmitReq(BaseModel):
+    session_id: str = Field(min_length=1, max_length=64)
+    diagnostic: dict
+    selected_option: str = Field(min_length=1, max_length=4)
+    event_key: str | None = None
+    answer_language: str | None = None
+
+
+@app.post("/concept-rescue/submit")
+def concept_rescue_submit(req: ConceptSubmitReq):
+    """Evaluate diagnostic answer, diagnose likely misconception, re-teach simpler, and update mastery."""
+    try:
+        return concept_rescue.submit_diagnostic_answer(
+            req.session_id,
+            req.diagnostic,
+            req.selected_option,
+            event_key=req.event_key,
+            answer_language=req.answer_language,
+            use_db=True,
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.delete("/session/{session_id}")
+def delete_session(session_id: str):
+    """Delete anonymous session learning events, mastery state, and query history."""
+    return {"ok": True, "deleted": mastery.delete_session(session_id, use_db=True)}
 
 
 class ExplainEnReq(BaseModel):
@@ -351,7 +424,7 @@ def telegram_webhook(update: dict):
 def teacher_summary(limit: int = 50):
     data = db.teacher_summary(limit)
     if isinstance(data, dict):
-        data["adaptive_mastery"] = mastery.get_aggregate_mastery()
+        data["adaptive_mastery"] = mastery.get_aggregate_mastery(use_db=True)
         tot = int(data.get("total_queries") or 0)
         ref = int(data.get("refused_queries") or 0)
         fb_up = int(data.get("helpful_count") or 0)
@@ -365,7 +438,7 @@ def teacher_summary(limit: int = 50):
 def teacher_export_weak_chapters():
     """Download weak chapters CSV for teacher assignment planning."""
     return PlainTextResponse(
-        content=mastery.weak_chapters_csv(),
+        content=mastery.weak_chapters_csv(use_db=True),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="weak_chapters.csv"'},
     )

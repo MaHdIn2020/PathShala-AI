@@ -35,6 +35,18 @@ class TestMastery(unittest.TestCase):
         self.assertIn("class_level,subject,chapter,avg_mastery,sessions,recommended_difficulty", csv_out)
         self.assertIn("খাদ্যশৃঙ্খল", csv_out)
 
+    def test_idempotent_event_key_and_delete_session(self):
+        r1 = mastery.record_attempt("s2", 8, "science", "Diffusion", False, textbook_medium="english_version", event_key="k1")
+        r2 = mastery.record_attempt("s2", 8, "science", "Diffusion", False, textbook_medium="english_version", event_key="k1")
+        self.assertFalse(r1["duplicate"])
+        self.assertTrue(r2["duplicate"])
+        self.assertEqual(r2["attempts"], 1)
+        self.assertEqual(r2["indicator_label"], mastery.INDICATOR_LABEL)
+
+        deleted = mastery.delete_session("s2")
+        self.assertEqual(deleted["cleared_memory"], 1)
+        self.assertEqual(mastery.get_session_mastery("s2")["chapters"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
