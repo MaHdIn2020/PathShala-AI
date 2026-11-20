@@ -27,14 +27,25 @@ class TestEval(unittest.TestCase):
 
     def test_summary(self):
         rows = [
-            {"answerable": True, "correct": True, "cite_ok": True},
-            {"answerable": True, "correct": False, "cite_ok": False},
-            {"answerable": False, "refusal_ok": True},
+            {"answerable": True, "correct": True, "cite_ok": True, "refused": False, "version_leak": False, "error": False},
+            {"answerable": True, "correct": False, "cite_ok": False, "refused": True, "version_leak": False, "error": False},
+            {"answerable": False, "refusal_ok": True, "refused": True, "version_leak": False, "error": False},
         ]
         s = summarize(rows, [100, 200, 300], [0.0, 0.002, 0.001])
         self.assertEqual(s["answer_accuracy"], 0.5)
         self.assertEqual(s["refusal_accuracy"], 1.0)
+        self.assertEqual(s["answerable_false_refusal_rate"], 0.5)
+        self.assertEqual(s["refusal_precision"], 0.5)
+        self.assertEqual(s["curriculum_version_leakage_count"], 0)
+        self.assertEqual(s["p50_latency_ms"], 200)
         self.assertEqual(s["p95_latency_ms"], 200)
+
+    def test_version_leakage_detection(self):
+        it = {"id": "v1", "class_level": 8, "textbook_medium": "english_version", "answerable": True, "keywords": ["diffusion"], "gold_chapters": [3]}
+        leaked = score_item(it, {"answer": "diffusion", "refused": False, "citations": [{"chapter_no": 3, "class_level": 8, "textbook_medium": "bangla_version"}]})
+        self.assertTrue(leaked["version_leak"])
+        clean = score_item(it, {"answer": "diffusion", "refused": False, "citations": [{"chapter_no": 3, "class_level": 8, "textbook_medium": "english_version"}]})
+        self.assertFalse(clean["version_leak"])
 
 
 if __name__ == "__main__":

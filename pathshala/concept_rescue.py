@@ -200,8 +200,11 @@ def generate_diagnostic_check(
 
     cost = 0.0
     try:
-        obj, u = llm_fn(sys_prompt, user_msg, cfg.llm_model, 900)
+        obj, u = llm_fn(sys_prompt, user_msg, cfg.llm_model, 2048)
         cost += u.get("cost", 0.0)
+        if not obj:
+            obj, u2 = llm_fn(sys_prompt, user_msg, cfg.llm_fast_model, 2048)
+            cost += u2.get("cost", 0.0)
     except Exception:
         obj = {}
 
@@ -370,8 +373,11 @@ def submit_diagnostic_answer(
     parsed = {}
     if chunks:
         try:
-            parsed, u = llm_fn(sys_prompt, user_msg, cfg.llm_model, 1200)
+            parsed, u = llm_fn(sys_prompt, user_msg, cfg.llm_model, 2400)
             cost += u.get("cost", 0.0)
+            if not parsed:
+                parsed, u2 = llm_fn(sys_prompt, user_msg, cfg.llm_fast_model, 2400)
+                cost += u2.get("cost", 0.0)
         except Exception:
             parsed = {}
 

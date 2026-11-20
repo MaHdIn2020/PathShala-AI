@@ -2,50 +2,48 @@
 
 [![CI](https://github.com/MaHdIn2020/PathShala-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/MaHdIn2020/PathShala-AI/actions/workflows/ci.yml)
 
-**30-Second Pitch:** PathShalaAI is a Bangla adaptive AI tutor grounded strictly in Bangladesh's NCTB primary textbooks (Classes 1–5, 7,081 indexed chunks). Students ask by text, voice, or textbook photo and receive step-by-step answers with verifiable chapter/chunk citations—or an honest refusal when the topic is not in the book. Includes adaptive EWMA chapter mastery, practice questions, a child-safety distress gate (`1098`), a teacher analytics dashboard, and a custom MCP server (`nctb-corpus`).
+**PathShalaAI does not simply give students answers. It identifies why they do not understand a concept and helps them learn it using their actual NCTB textbook.**
 
-- **Live Demo:** https://web-xi-peach-30.vercel.app (UI toggle: বাংলা / English)
+- **Live Web UI (Vercel):** https://web-xi-peach-30.vercel.app
 - **API Docs (Swagger):** https://pathshala-ai-g087.onrender.com/docs
 
-### Try These 3 Sample Questions
-| Class & Subject | Question | Expected Behavior |
-|---|---|---|
-| Class 5 · Science | `খাদ্যশৃঙ্খল কাকে বলে?` | Cited Bangla answer from Class 5 Science + expandable source snippet + optional English explanation |
-| Class 5 · BGS | `লালবাগ কেল্লা কোথায় অবস্থিত?` | Cited Bangla answer from Class 5 BGS with chapter & chunk reference |
-| Class 5 · Science (Off-syllabus) | `কোয়ান্টাম কম্পিউটার কীভাবে কাজ করে?` | Honest refusal (`এই প্রশ্নের উত্তর পাঠ্যবইয়ে খুঁজে পাইনি।`) — zero hallucinated citations |
+---
 
-## Quickstart
-1. Configure `.env` (`GEMINI_API_KEY`, `DATABASE_URL` with `pgvector`) and place the Mendeley dataset under `data/raw/mendeley/`.
-2. `bash scripts/setup.sh`
-3. `make db` (or apply `db/schema.sql`) · `python -m ingest.run --no-ctx` (or `make ingest`)
-4. `make api` (FastAPI on `:8000`) · `make web` (Next.js on `:3000`)
-5. `make verify` · `make eval`
+## Feature Readiness Status (Honest Matrix)
 
-## Architecture
-```mermaid
-flowchart LR
-  D["NCTB PrimaryText JSONL<br/>(Classes 1-5, 7,081 chunks)"] --> P["Prepare & Split (>1500 chars)"]
-  P --> E["BAAI/bge-m3 (1024-d, bfloat16)"]
-  E --> PG[("Postgres + pgvector<br/>HNSW + GIN simple FTS")]
+| Status | Implemented & Verified Capabilities |
+|---|---|
+| **Working Now** | • **Multi-Version NCTB Isolation:** Separate `curriculum_id`, `textbook_medium` (`bangla_version` vs `english_version`), `class_level`, `subject`, and independent `answer_language` (`bn` / `en`).<br>• **Ingested Corpus (`112` books, `50,532` chunks):** `33` Bangla Version books (Classes 1–5: `7,081` `bge-m3` embedded chunks) + `79` English Version books (Classes 1–10: `43,451` FTS-indexed chunks with chapter `page_start`–`page_end`; `1,093` priority `bge-m3` vectors in Class 8 Science & Classes 1–2 Math).<br>• **Concept Rescue Loop:** `ASK -> EXPLAIN -> CHECK -> DIAGNOSE -> RE-TEACH -> PRACTICE -> TRACK` via `/concept-rescue/check` and `/concept-rescue/submit` with cautious `Likely misconception:` labels.<br>• **PostgreSQL Mastery Persistence:** Idempotent `learning_events` (`event_key`) and `session_mastery` surviving restarts + `DELETE /session/{session_id}`.<br>• **Child Safety & Privacy:** Pre-retrieval Bangla/English/Banglish distress gate (`1098` Child Helpline), non-logging of distress queries, PII scrubbing (`scrub_pii`), 2 MB in-memory photo OCR, small-cohort (`<3`) teacher privacy suppression.<br>• **Teacher Learning-Gap Dashboard (`/teacher`):** Incorrect-answer rates with sample counts, recurring misconceptions, chapter refusal heatmap, top questions, CSV export, clearly labeled Demo Data (`session_id='seed'`).<br>• **Custom MCP Server (`nctb-corpus`):** 4 read-only stdio tools (`search_textbook`, `get_chapter`, `list_chapters`, `explain_citation`). |
+| **In Progress** | • Generating `BAAI/bge-m3` embeddings for remaining English Version subjects beyond Class 8 Science & Classes 1–2 Math (currently served via Postgres FTS).<br>• Running full live LLM benchmark over the new `eval/golden_set_v2.jsonl` (`n=205`). |
+| **Planned** | • Ingesting Classes 6–10 Bangla Version (`51,791` chunks currently on disk in `data/raw/mendeley`).<br>• Teacher-reviewed distractor misconception banks per subject.<br>• Offline cached quiz packs beyond the current PWA app-shell cache (`web/public/sw.js`). |
 
-  U["Student UI (Next.js)<br/>Text / Voice / Photo"] --> API["FastAPI (:8000)"]
-  API --> LG["LangGraph Tutor Pipeline"]
-  LG --> SG{"Distress Gate<br/>(1098 Helpline)"}
-  SG -->|safe| RW["Query Rewrite (Fast LLM)"]
-  RW --> RET["Hybrid Search + RRF<br/>(Top-30 -> Top-5)"]
-  PG --> RET
-  RET --> G{"sim >= 0.45?"}
-  G -->|no| REF["Honest Refusal"]
-  G -->|yes| ANS["Grounded Answer +<br/>clean_citations"]
-  ANS --> VER["Verifier (PASS/FAIL + 1 Retry)"]
-  VER --> U
+---
 
-  API --> TD["Teacher Dashboard (/teacher)<br/>Summary + K-Means Clusters"]
-  PG --> MCP["nctb-corpus MCP Server (stdio)"]
-```
+## Concept Rescue Demo Journey (Example Flow)
+1. Select **Textbook: `English Version`**, **Class `8`**, **Subject `Science`**, and **Answer Language: `বাংলা (Bangla)`**.
+2. Ask: `What is diffusion and how does it work in plants?`
+3. Read the Bangla explanation grounded in Class 8 Science Ch. 3 (`Diffusion, Osmosis and Transpiration`, `pp. 30–39`).
+4. Click **Concept Check** -> select an incorrect distractor -> view the cautious **Likely Misconception**, a simpler grounded re-explanation, and a fresh practice MCQ on the same learning objective.
+5. Answer the follow-up MCQ correctly and watch the **Estimated Practice Mastery (EWMA)** update in PostgreSQL.
+6. Visit `/teacher` to see aggregate learning gaps and recurring misconceptions (demo rows are explicitly tagged `ডেমো ডেটা`).
 
-## Evaluation (Measured on `n = 187` Golden Set)
-Evaluated with `make eval` on `eval/golden_set.jsonl` (`155` answerable across Classes 1–5 + `32` off-syllabus). See [docs/EVAL_REPORT.md](docs/EVAL_REPORT.md), [docs/ERROR_ANALYSIS.md](docs/ERROR_ANALYSIS.md), [docs/RESPONSIBLE_AI.md](docs/RESPONSIBLE_AI.md), and [docs/BUSINESS.md](docs/BUSINESS.md).
+See [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) for full presenter and offline fallback steps.
+
+---
+
+## Architecture & Documentation
+- **System Architecture & Migrations:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- **Repository Audit (Phase 0):** [docs/ANTIGRAVITY_AUDIT.md](docs/ANTIGRAVITY_AUDIT.md)
+- **Corpus & Ingestion Report:** [docs/DATA_REPORT.md](docs/DATA_REPORT.md)
+- **Evaluation Methodology & Results:** [docs/EVAL_REPORT.md](docs/EVAL_REPORT.md)
+- **Responsible AI, Child Safety & Provider Data Flow:** [docs/RESPONSIBLE_AI.md](docs/RESPONSIBLE_AI.md)
+- **Engineering Decisions:** [docs/DECISIONS.md](docs/DECISIONS.md)
+- **Business & Pilot Plan:** [docs/BUSINESS.md](docs/BUSINESS.md)
+
+---
+
+## Measured Evaluation (v1 Historical Baseline, `n = 187`)
+Evaluated on `eval/golden_set.jsonl` (`155` answerable Classes 1–5 Bangla Version + `32` off-syllabus). See [docs/EVAL_REPORT.md](docs/EVAL_REPORT.md).
 
 | Metric | RAG (`PathShalaAI`) | Baseline (`Plain LLM`) |
 |---|---:|---:|
@@ -58,43 +56,29 @@ Evaluated with `make eval` on `eval/golden_set.jsonl` (`155` answerable across C
 
 ![RAG vs Baseline Evaluation Chart](docs/eval_chart.png)
 
-- **Red-Team Safety Check:** `PYTHONPATH=. python scripts/redteam.py` — **25/25 PASS** across distress (`1098`), jailbreak, prompt injection, adult, politics, medical, and off-syllabus prompts.
-- **Eval Hardening:** `eval/run_eval.py` supports deterministic 80/20 `dev/test` splits, 95% Wilson confidence intervals, and an optional `--judge` LLM grader alongside keyword recall.
+- **Red-Team Safety Check (`scripts/redteam.py`):** **50/50 PASS** across Bangla/English/Banglish distress (`1098`), jailbreak, prompt injection, inappropriate, political, medical, and Class 6+ off-syllabus prompts.
 
-## Key Features
-- **Grounded Bangla Tutor:** Text, voice (`bn-BD`), and textbook photo (`/ask-image`, 2 MB limit) with SSE streaming (`/ask/stream`), conditional query rewrite, and verified `clean_citations`.
-- **Adaptive Learning:** Anonymous EWMA chapter mastery (`/practice/attempt`, `/mastery`) with difficulty scaling (`recall` → `understanding` → `application`) and weak-chapter recommendations.
-- **English Judge Layer:** `বাংলা / EN` UI toggle and one-click `Explain in English` (`/explain-en`) over the same grounded textbook answer.
-- **Low-Bandwidth & Security:** GZip compression, PWA offline shell (`web/public/sw.js`), Telegram webhook (`/telegram/webhook`), CORS allowlist, per-IP rate limiting, max body cap, `X-Request-ID`, and optional `TEACHER_TOKEN` auth on `/teacher/*`.
+---
 
-## Layout
-`pathshala/` core (`api`, `pipeline`, `retrieval`, `db`, `llm`, `embed`, `text`, `practice`, `mastery`, `clustering`, `security`) · `ingest/` · `eval/` · `mcp_server/` · `web/` · `prompts/` · `db/schema.sql` · `automation/n8n/` · `scripts/` · `tests/`
+## Quickstart & Migrations
+1. Configure `.env` (`GEMINI_API_KEY`, `DATABASE_URL` with `pgvector`).
+2. Apply schema / migrations idempotently:
+   `python -c "from pathshala.db import apply_migrations; print(apply_migrations())"`
+3. Ingest datasets:
+   - Bangla Version (Classes 1–5): `python -m ingest.run --data data/raw/mendeley --medium bangla_version --max-class 5 --no-ctx`
+   - English Version (Classes 1–10 FTS + page ranges): `python -m ingest.run --data data/raw/NCTB-SchoolText-English --medium english_version --max-class 0 --no-ctx --fts-only`
+   - Optional priority vectors: `python -m ingest.run --data data/raw/NCTB-SchoolText-English --medium english_version --max-class 0 --classes 8 --subjects science --no-ctx`
+4. Optional Concept Rescue demo seed (`session_id='seed'`): `python scripts/seed_demo.py`
+5. Run Backend & Frontend:
+   - `uvicorn pathshala.api:app --reload --port 8000`
+   - `npm --prefix web run dev`
+6. Run Verification:
+   - `python -m unittest discover -s tests -t . -q`
+   - `python -m ruff check pathshala ingest eval mcp_server tests`
+   - `npm --prefix web run lint && npm --prefix web run build`
 
-## MCP Server (`nctb-corpus`)
-Custom FastMCP stdio server in `mcp_server/server.py` (config snippet in `mcp_server/mcp_config.snippet.json`). Run directly with `python -m mcp_server.server`.
-- **Tools (read-only):**
-  - `search_textbook(query, class_level, subject=None, k=5)` — hybrid vector + FTS RRF search over NCTB textbook chunks.
-  - `list_chapters(book_id)` — chapter numbers, titles, and chunk counts for a textbook.
-  - `get_chapter(book_id, chapter_no)` — all chunks in a textbook chapter.
-  - `explain_citation(chunk_id)` — full source chunk and metadata (`class_level`, `subject`, `chapter`, `chunk_ref`, `text`) behind a citation.
-- **Database permissions:** use a read-only Postgres role in production:
-  `create role mcp_ro login password '...'; grant select on chunks, textbooks to mcp_ro;`
-- **Build disclosure:** custom `nctb-corpus` MCP server is provided in `mcp_server/`; no external third-party MCP servers were enabled during the build.
+---
 
-## Privacy, Safety & Limitations
-- **Safety & Privacy:** No user accounts, names, or phone numbers are collected; uploaded photos (`/ask-image`, 2 MB limit) are transcribed in memory and never saved; distress keywords immediately return a calm helpline message (Child Helpline `1098`).
-- **Teacher Dashboard (`/teacher`):** Read-only without authentication for demo convenience; synthetic demo rows are explicitly flagged with `session_id='seed'` and separated from real queries in the UI.
-- **Honest Limitations:**
-  - Source math/religion OCR contains noise; dataset chunks have **no page numbers**, so citations use class, subject, chapter, and `chunk_ref`.
-  - Scoped to **Primary Classes 1–5** (`7,081` chunks); contextualisation was kept OFF (`--no-ctx`).
-  - Automated `eval/run_eval.py` uses strict substring `keyword_recall >= 0.5`, which under-counts valid Bangla paraphrases.
-
-## Roadmap (Planned — Classes 6–12 Expansion)
-*Not yet implemented in code; planned post-hackathon milestones:*
-- **Phase 1 (Classes 6–8):** Index the remaining `NCTB-SchoolText` middle-school chunks (~25k chunks) into the same `pgvector` schema with subject-level HNSW partitions.
-- **Phase 2 (Classes 9–12 / SSC & HSC):** Add math/physics LaTeX-aware chunking and diagram OCR for secondary/higher-secondary textbooks.
-- **Phase 3 (Distribution):** Full Telegram bot + low-bandwidth offline packs for rural schools.
-
-## Data & Licence
-**Dataset:** Badar, Mir Hossain Ahmed, Pervaj Ahmed Tuhin. *NCTB-PrimaryText: A Curriculum-Aligned Textbook Chunk Dataset for Bangla and English Primary Education.* Mendeley Data, V1, 2026. DOI 10.17632/w3hj4m45d9.1. Licence CC BY 4.0 (https://data.mendeley.com/datasets/w3hj4m45d9/1). Not redistributed here.
-**Code:** MIT (`LICENSE`).
+## Data Attribution & Licence
+- **Datasets:** NCTB-PrimaryText / NCTB-SchoolText (Bangla & English Version chunks; Mendeley Data DOI `10.17632/w3hj4m45d9.1`, CC BY 4.0). Not redistributed in git.
+- **Code:** MIT ([LICENSE](LICENSE)).

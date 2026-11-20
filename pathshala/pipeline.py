@@ -247,6 +247,8 @@ class PipelineState(TypedDict, total=False):
     hint: str | None
     retries: int
     cost: float
+    retrieval_ms: int
+    llm_ms: int
     reason: str | None
     refused: bool
 
@@ -258,20 +260,24 @@ def build_graph(cfg, retrieve_fn, llm_fn):
         q = state["question"]
         query = q
         cost = state.get("cost", 0.0)
+        llm_ms = state.get("llm_ms", 0)
         med = state.get("textbook_medium", "bangla_version")
         if cfg.rewrite and should_rewrite(q, state.get("subject"), textbook_medium=med):
             target_lang = "English" if med == "english_version" else "Bangla"
             sys_prompt = load_prompt("query_rewrite").replace("{target_lang}", target_lang)
+            t_llm = time.time()
             try:
                 obj, u = llm_fn(sys_prompt, q, cfg.llm_fast_model, 300)
                 cost += u.get("cost", 0.0)
                 query = (obj.get("query") or q).strip() or q
             except Exception:
                 query = q
-        return {"query": query, "cost": cost}
+            llm_ms += int((time.time() - t_llm) * 1000)
+        return {"query": query, "cost": cost, "llm_ms": llm_ms}
 
     def retrieve_node(state: PipelineState) -> dict:
         retrieval_q = normalize_for_retrieval(state["query"])
+        t_ret = time.time()
         chunks = _call_retrieve(
             retrieve_fn,
             retrieval_q,
@@ -281,13 +287,28 @@ def build_graph(cfg, retrieve_fn, llm_fn):
             state.get("curriculum_id", "nctb"),
             state.get("textbook_medium", "bangla_version"),
         )
+        retrieval_ms = int((time.time() - t_ret) * 1000)
         top_score = max((c.get("sim", 0.0) for c in chunks), default=0.0)
         topic = chunks[0].get("chapter") if chunks else None
         threshold = subject_min_score(state.get("subject"), cfg.min_score)
         if not chunks or top_score < threshold:
-            return {"chunks": chunks, "top_score": top_score, "topic": topic, "refused": True, "reason": "low_retrieval"}
+            return {
+                "chunks": chunks,
+                "top_score": top_score,
+                "topic": topic,
+                "retrieval_ms": retrieval_ms,
+                "refused": True,
+                "reason": "low_retrieval",
+            }
         ctx = format_context(chunks, cfg.max_context_chars)
-        return {"chunks": chunks, "top_score": top_score, "topic": topic, "ctx": ctx, "refused": False}
+        return {
+            "chunks": chunks,
+            "top_score": top_score,
+            "topic": topic,
+            "ctx": ctx,
+            "retrieval_ms": retrieval_ms,
+            "refused": False,
+        }
 
     def answer_node(state: PipelineState) -> dict:
         ans_lang = state.get("answer_language", "bn")
@@ -305,12 +326,14 @@ def build_graph(cfg, retrieve_fn, llm_fn):
         user_msg = f"CONTEXT:\n{state['ctx']}\n\nQUESTION: {state['question']}"
         if state.get("hint"):
             user_msg += f"\n\nHINT: {state['hint']}"
+        t_llm = time.time()
         obj, u = llm_fn(system, user_msg, cfg.llm_model, 1500)
+        llm_ms = state.get("llm_ms", 0) + int((time.time() - t_llm) * 1000)
         cost = state.get("cost", 0.0) + u.get("cost", 0.0)
         ans = (obj.get("answer") or "").strip()
         if not ans or ans == REFUSAL or ans == REFUSAL_EN:
-            return {"raw_obj": obj, "ans": ans, "cost": cost, "refused": True, "reason": "model_refused"}
-        return {"raw_obj": obj, "ans": ans, "cost": cost, "refused": False, "reason": None}
+            return {"raw_obj": obj, "ans": ans, "cost": cost, "llm_ms": llm_ms, "refused": True, "reason": "model_refused"}
+        return {"raw_obj": obj, "ans": ans, "cost": cost, "llm_ms": llm_ms, "refused": False, "reason": None}
 
     def check_cites_node(state: PipelineState) -> dict:
         cites = clean_citations(
@@ -326,23 +349,28 @@ def build_graph(cfg, retrieve_fn, llm_fn):
         if not cfg.verify or should_skip_verify(state.get("top_score"), state.get("cites") or []):
             return {"refused": False, "reason": None}
         cost = state.get("cost", 0.0)
+        llm_ms = state.get("llm_ms", 0)
+        t_llm = time.time()
         try:
             v, u2 = llm_fn(load_prompt("verifier"), f"ANSWER:\n{state['ans']}\n\nCONTEXT:\n{state['ctx']}", cfg.llm_verify_model, 400)
             cost += u2.get("cost", 0.0)
+            llm_ms += int((time.time() - t_llm) * 1000)
         except Exception:
-            return {"cost": cost, "refused": True, "reason": "verifier_error"}
+            llm_ms += int((time.time() - t_llm) * 1000)
+            return {"cost": cost, "llm_ms": llm_ms, "refused": True, "reason": "verifier_error"}
 
         if str(v.get("verdict", "")).upper() == "PASS":
-            return {"cost": cost, "refused": False, "reason": None}
+            return {"cost": cost, "llm_ms": llm_ms, "refused": False, "reason": None}
         if state.get("retries", 0) < 1:
             return {
                 "cost": cost,
+                "llm_ms": llm_ms,
                 "retries": state.get("retries", 0) + 1,
                 "hint": "fix unsupported claims: use only facts from CONTEXT and cite valid chunk_id",
                 "reason": "retry_verify",
                 "refused": False,
             }
-        return {"cost": cost, "refused": True, "reason": "verifier_fail"}
+        return {"cost": cost, "llm_ms": llm_ms, "refused": True, "reason": "verifier_fail"}
 
     g = StateGraph(PipelineState)
     g.add_node("rewrite", rewrite_node)
@@ -436,6 +464,8 @@ def answer(
             "query": q,
             "retries": 0,
             "cost": 0.0,
+            "retrieval_ms": 0,
+            "llm_ms": 0,
             "refused": False,
         }
     )
@@ -444,8 +474,10 @@ def answer(
     top_score = out.get("top_score")
     topic = out.get("topic")
     query = out.get("query", q)
+    retrieval_ms = int(out.get("retrieval_ms") or 0)
+    llm_ms = int(out.get("llm_ms") or 0)
     if out.get("refused"):
-        return _refuse(
+        r_ref = _refuse(
             out.get("reason") or "refused",
             t0,
             top_score,
@@ -456,6 +488,9 @@ def answer(
             curriculum_id=curr,
             textbook_medium=med,
         )
+        r_ref["retrieval_ms"] = retrieval_ms
+        r_ref["llm_ms"] = llm_ms
+        return r_ref
 
     obj = out.get("raw_obj") or {}
     res = {
@@ -468,6 +503,8 @@ def answer(
         "top_score": top_score,
         "topic": topic,
         "latency_ms": int((time.time() - t0) * 1000),
+        "retrieval_ms": retrieval_ms,
+        "llm_ms": llm_ms,
         "cost_usd": cost,
         "cached": False,
         "query": query,

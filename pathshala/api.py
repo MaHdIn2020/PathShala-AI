@@ -1,5 +1,6 @@
 """FastAPI app. Run: uvicorn pathshala.api:app --reload --port 8000"""
 import json
+import logging
 import os
 import uuid
 from fastapi import FastAPI, HTTPException, Request
@@ -23,6 +24,7 @@ app.add_middleware(
 
 _RATE_LIMITER = RateLimiter(max_per_min=int(os.getenv("RATE_LIMIT_PER_MIN", "60")))
 _MAX_BODY_BYTES = int(os.getenv("MAX_BODY_BYTES", "3200000"))
+_LOG = logging.getLogger("pathshala.api")
 
 
 @app.middleware("http")
@@ -30,7 +32,7 @@ async def security_middleware(request: Request, call_next):
     cl = request.headers.get("content-length")
     if cl and cl.isdigit() and int(cl) > _MAX_BODY_BYTES:
         return JSONResponse({"detail": "Request body too large"}, status_code=413)
-    if request.url.path != "/health":
+    if request.url.path not in ("/health", "/health/ready"):
         ip = request.client.host if request.client else "unknown"
         if not _RATE_LIMITER.allow(ip):
             return JSONResponse({"detail": "Too many requests"}, status_code=429)
@@ -39,7 +41,15 @@ async def security_middleware(request: Request, call_next):
         if not verify_teacher_token(tok):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
     req_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        _LOG.warning("unhandled_error req_id=%s path=%s err=%s", req_id, request.url.path, type(exc).__name__)
+        return JSONResponse(
+            {"detail": "সার্ভার সাময়িকভাবে ব্যস্ত আছে। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।", "request_id": req_id},
+            status_code=503,
+            headers={"X-Request-ID": req_id},
+        )
     response.headers["X-Request-ID"] = req_id
     return response
 
@@ -74,6 +84,20 @@ class AskImageReq(BaseModel):
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/health/ready")
+def health_ready():
+    """Readiness check verifying Postgres connectivity and textbook counts by medium."""
+    try:
+        with db.get_conn() as c, c.cursor() as cur:
+            cur.execute(
+                "select textbook_medium, count(*) as books from textbooks group by textbook_medium order by textbook_medium"
+            )
+            books = cur.fetchall()
+        return {"ok": True, "db": "ready", "books_by_medium": books}
+    except Exception:
+        return JSONResponse({"ok": False, "db": "unavailable"}, status_code=503)
 
 
 @app.get("/curriculum/catalog")
