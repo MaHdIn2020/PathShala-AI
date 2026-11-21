@@ -13,9 +13,9 @@
 
 | Status | Implemented & Verified Capabilities |
 |---|---|
-| **Working Now** | • **Multi-Version NCTB Isolation:** Separate `curriculum_id`, `textbook_medium` (`bangla_version` vs `english_version`), `class_level`, `subject`, and independent `answer_language` (`bn` / `en`).<br>• **Ingested Corpus (`112` books, `50,532` chunks):** `33` Bangla Version books (Classes 1–5: `7,081` `bge-m3` embedded chunks) + `79` English Version books (Classes 1–10: `43,451` FTS-indexed chunks with chapter `page_start`–`page_end`; `1,093` priority `bge-m3` vectors in Class 8 Science & Classes 1–2 Math).<br>• **Concept Rescue Loop:** `ASK -> EXPLAIN -> CHECK -> DIAGNOSE -> RE-TEACH -> PRACTICE -> TRACK` via `/concept-rescue/check` and `/concept-rescue/submit` with cautious `Likely misconception:` labels.<br>• **PostgreSQL Mastery Persistence:** Idempotent `learning_events` (`event_key`) and `session_mastery` surviving restarts + `DELETE /session/{session_id}`.<br>• **Child Safety & Privacy:** Pre-retrieval Bangla/English/Banglish distress gate (`1098` Child Helpline), non-logging of distress queries, PII scrubbing (`scrub_pii`), 2 MB in-memory photo OCR, small-cohort (`<3`) teacher privacy suppression.<br>• **Teacher Learning-Gap Dashboard (`/teacher`):** Incorrect-answer rates with sample counts, recurring misconceptions, chapter refusal heatmap, top questions, CSV export, clearly labeled Demo Data (`session_id='seed'`).<br>• **Custom MCP Server (`nctb-corpus`):** 4 read-only stdio tools (`search_textbook`, `get_chapter`, `list_chapters`, `explain_citation`). |
-| **In Progress** | • Generating `BAAI/bge-m3` embeddings for remaining English Version subjects beyond Class 8 Science & Classes 1–2 Math (currently served via Postgres FTS).<br>• Running full live LLM benchmark over the new `eval/golden_set_v2.jsonl` (`n=205`). |
-| **Planned** | • Ingesting Classes 6–10 Bangla Version (`51,791` chunks currently on disk in `data/raw/mendeley`).<br>• Teacher-reviewed distractor misconception banks per subject.<br>• Offline cached quiz packs beyond the current PWA app-shell cache (`web/public/sw.js`). |
+| **Working Now** | • **Multi-Version NCTB Isolation & 3-DB Sharding:** Separate `curriculum_id`, `textbook_medium` (`bangla_version` vs `english_version`), `class_level`, `subject`, and independent `answer_language` (`bn` / `en`) across 3 Neon PostgreSQL shards (`DATABASE_URL`, `DATABASE_URL_BN_SSC`, `DATABASE_URL_EN`).<br>• **Full Ingested Corpus (`211` books, `102,464` `bge-m3` embedded chunks):** `99` Bangla Version books (Classes 1–8: `31,872` chunks) + `33` Bangla SSC books (Classes 9–10: `27,141` chunks) + `79` English Version books (Classes 1–10: `43,451` chunks) — `100%` dense `BAAI/bge-m3` vector + GIN FTS coverage (`102,233` with chapter `page_start`–`page_end`).<br>• **Concept Rescue Loop:** `ASK -> EXPLAIN -> CHECK -> DIAGNOSE -> RE-TEACH -> PRACTICE -> TRACK` via `/concept-rescue/check` and `/concept-rescue/submit` with cautious `Likely misconception:` labels.<br>• **PostgreSQL Mastery Persistence:** Idempotent `learning_events` (`event_key`) and `session_mastery` surviving restarts + `DELETE /session/{session_id}`.<br>• **Child Safety & Privacy:** Pre-retrieval Bangla/English/Banglish distress gate (`1098` Child Helpline), non-logging of distress queries, PII scrubbing (`scrub_pii`), 2 MB in-memory photo OCR, small-cohort (`<3`) teacher privacy suppression.<br>• **Teacher Learning-Gap Dashboard (`/teacher`):** Incorrect-answer rates with sample counts, recurring misconceptions, chapter refusal heatmap, top questions, CSV export, clearly labeled Demo Data (`session_id='seed'`).<br>• **Custom MCP Server (`nctb-corpus`):** 4 read-only stdio tools (`search_textbook`, `get_chapter`, `list_chapters`, `explain_citation`). |
+| **In Progress** | • Running full live LLM benchmark over the new `eval/golden_set_v2.jsonl` (`n=205`). |
+| **Planned** | • Teacher-reviewed distractor misconception banks per subject.<br>• Offline cached quiz packs beyond the current PWA app-shell cache (`web/public/sw.js`). |
 
 ---
 
@@ -61,13 +61,13 @@ Evaluated on `eval/golden_set.jsonl` (`155` answerable Classes 1–5 Bangla Vers
 ---
 
 ## Quickstart & Migrations
-1. Configure `.env` (`GEMINI_API_KEY`, `DATABASE_URL` with `pgvector`).
-2. Apply schema / migrations idempotently:
+1. Configure `.env` (`GEMINI_API_KEY`, `DATABASE_URL`, plus optional `DATABASE_URL_BN_SSC` and `DATABASE_URL_EN` shards).
+2. Apply schema / migrations idempotently across all shards:
    `python -c "from pathshala.db import apply_migrations; print(apply_migrations())"`
-3. Ingest datasets:
-   - Bangla Version (Classes 1–5): `python -m ingest.run --data data/raw/mendeley --medium bangla_version --max-class 5 --no-ctx`
-   - English Version (Classes 1–10 FTS + page ranges): `python -m ingest.run --data data/raw/NCTB-SchoolText-English --medium english_version --max-class 0 --no-ctx --fts-only`
-   - Optional priority vectors: `python -m ingest.run --data data/raw/NCTB-SchoolText-English --medium english_version --max-class 0 --classes 8 --subjects science --no-ctx`
+3. Ingest datasets (auto-detects CUDA GPU via PyTorch when available):
+   - Bangla Version (Classes 1–8 -> `DATABASE_URL`): `python -m ingest.run --data data/raw/mendeley --medium bangla_version --max-class 8 --no-ctx`
+   - Bangla Version (Classes 9–10 SSC -> `DATABASE_URL_BN_SSC`): `python -m ingest.run --data data/raw/mendeley --medium bangla_version --max-class 0 --classes 9 --no-ctx`
+   - English Version (Classes 1–10 -> `DATABASE_URL_EN`): `python -m ingest.run --data data/raw/NCTB-SchoolText-English --medium english_version --max-class 0 --no-ctx`
 4. Optional Concept Rescue demo seed (`session_id='seed'`): `python scripts/seed_demo.py`
 5. Run Backend & Frontend:
    - `uvicorn pathshala.api:app --reload --port 8000`

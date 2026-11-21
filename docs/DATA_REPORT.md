@@ -1,6 +1,6 @@
 # Data report
 
-Measured with `ingest/mendeley.py` and verified against live PostgreSQL (`Neon AWS us-east-2`).
+Measured with `ingest/mendeley.py` and verified across all 3 live Neon PostgreSQL shards.
 
 ## 1. Sources & Attribution
 - **NCTB Bangla Version (`data/raw/mendeley`):** Mendeley Data, DOI `10.17632/w3hj4m45d9.1`, CC BY 4.0 (*NCTB-PrimaryText / NCTB-SchoolText*).
@@ -19,15 +19,20 @@ Measured with `ingest/mendeley.py` and verified against live PostgreSQL (`Neon A
 | Class 7 | 8,377 | 22 | 6,504 | 13 |
 | Class 8 | 9,357 | 22 | 6,812 | 13 (`science`: 822 raw / 824 split) |
 | Class 9–10 (`classNineTen`) | 27,059 | 33 | 16,915 | 17 |
-| **Total on disk** | **58,872** | **134 books** | **43,341** | **79 books** |
+| **Total on disk** | **58,872** | **132 books** | **43,341** | **79 books** |
 
-## 3. Live PostgreSQL Inventory (Verified After Migration `001` & Ingestion)
-- **Database Size:** `196 MB`
-- **Bangla Version (`bangla_version`):** `33` textbooks (Classes 1–5), `7,081` chunks (`7,081` with `BAAI/bge-m3` 1024-d embeddings, `6,850` with chapter `page_start`–`page_end` mapped from `chapters_config_*.json`). Classes 6–10 Bangla Version are on disk and not yet ingested.
-- **English Version (`english_version`):** `79` textbooks (Classes 1–10), `43,451` chunks (`43,451` indexed with Postgres `simple` GIN FTS + `100%` chapter `page_start`–`page_end`; `1,093` priority chunks embedded with `BAAI/bge-m3`: `824` in Class 8 Science + `269` in Classes 1–2 Math).
-- **Total Indexed in DB:** `112` textbooks, `50,532` chunks (`8,174` dense vectors + `50,532` FTS rows).
+## 3. Live 3-Shard PostgreSQL Inventory (Verified Full `BAAI/bge-m3` Coverage)
+
+| Shard (`env`) | Scope | DB Size | Textbooks | Prepared Chunks | `bge-m3` Embedded (`1024-d`) | Chapter Page Ranges |
+|---|---|---:|---:|---:|---:|---:|
+| `DATABASE_URL` (Primary) | Bangla Version Classes 1–8 + operational/Concept Rescue tables | `496 MB` | `99` | `31,872` | `31,872` (100%) | `31,641` |
+| `DATABASE_URL_BN_SSC` | Bangla Version Classes 9–10 (SSC) | `425 MB` | `33` | `27,141` | `27,141` (100%) | `27,141` |
+| `DATABASE_URL_EN` | English Version Classes 1–10 | `640 MB` | `79` | `43,451` | `43,451` (100%) | `43,451` |
+| **Total Across All Shards** | **NCTB Bangla + English Classes 1–10** | **`1,561 MB`** | **`211`** | **`102,464`** | **`102,464` (100%)** | **`102,233`** |
+
+*Note:* `ingest/prepare.py` splits chunks exceeding `1500` chars into `-a`, `-b` segments (`58,872 -> 59,013` Bangla chunks; `43,341 -> 43,451` English chunks), matching the `132` Bangla books (`99` Classes 1–8 + `33` Classes 9–10) and `79` English books (`211` textbooks total).
 
 ## 4. Identity & Page Provenance Notes
-- English Version chunk references are prefixed with `en-` (e.g., `en-8-Science-3-4`) so identical chapter/chunk indices never overwrite Bangla Version chunks (`8-Science-3-4`).
-- `chapters_config_<subject>.json` supplies chapter-level `start_page` and `end_page` (e.g., Class 8 Science Ch. 3 `pp. 30–39`). Where a subject lacks `chapters_config`, `page_start`/`page_end` remain `NULL` and the UI honestly reports chapter-level provenance without inventing page numbers.
+- English Version chunk references are prefixed with `en-` (e.g., `en-8-Science-3-4`) so identical chapter/chunk indices never collide with Bangla Version chunks (`8-Science-3-4`).
+- `chapters_config_<subject>.json` supplies chapter-level `start_page` and `end_page`. Where a subject lacks `chapters_config` (231 primary Bangla chunks), `page_start`/`page_end` remain `NULL` and the UI honestly reports chapter-level provenance without inventing page numbers.
 - Source math/religion OCR contains occasional character noise (preserved verbatim without hallucination).

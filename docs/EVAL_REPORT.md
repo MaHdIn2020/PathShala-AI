@@ -46,5 +46,5 @@ Added in Phase 6 without overwriting the v1 baseline:
 
 ## 3. Known Limitations
 - **Keyword recall is strict:** Substring matching (`keyword_recall >= 0.5`) penalizes valid Bangla paraphrases (use `--judge` for semantic grading).
-- **Partial dense vector coverage on English Version:** Class 8 Science (`824` chunks) and Classes 1–2 Math (`269` chunks) use `BAAI/bge-m3` + FTS hybrid search; Classes 3–10 other English Version subjects rely on Postgres `simple` FTS until batch-embedded.
+- **Full hybrid vector coverage achieved across all 211 textbooks:** All `102,464` chunks across Bangla Version Classes 1–10 and English Version Classes 1–10 now carry `BAAI/bge-m3` (`1024-d`) embeddings alongside Postgres `simple` FTS.
 - **OCR noise in source corpus:** Some Math and Religion chunks contain OCR artifacts.

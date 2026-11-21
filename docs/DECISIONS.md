@@ -20,6 +20,7 @@ Format: `Dn | date | decision | why`
 - D18 | 2026-11-21 | Ingest all 43,451 English Version chunks (79 books, Classes 1–10) with FTS + chapter page ranges (`chapters_config_*.json`), plus `BAAI/bge-m3` embeddings on priority demo books (Class 8 Science: 824 chunks; Classes 1–2 Math: 269 chunks) | Avoids >8h CPU embedding block and stays at `196 MB` inside Neon storage while enabling immediate English Version retrieval across Classes 1–10
 - D19 | 2026-11-21 | Persist Concept Rescue `learning_events` and EWMA `session_mastery` in PostgreSQL with `event_key` idempotency and `min_group_size=3` teacher privacy suppression | Survives server restarts, prevents duplicate-submission inflation, and avoids identifying small real student cohorts
 - D20 | 2026-11-21 | Preserve `eval/golden_set.jsonl` (`n=187`) as historical v1 baseline and add `eval/golden_set_v2.jsonl` (`n=205`) with cross-version leakage & false-refusal metrics | Enables reproducible multi-version benchmarking without conflating different metric definitions
+- D21 | 2026-11-21 | Enable 3-DB Postgres sharding (`DATABASE_URL` for Bangla 1–8 + analytics, `DATABASE_URL_BN_SSC` for Bangla 9–10, `DATABASE_URL_EN` for English 1–10) and embed all 102,464 chunks across 211 textbooks with `BAAI/bge-m3` on RTX 4060 (`torch 2.6.0+cu124`) | Fits full Classes 1–10 Bangla + English dense vector + HNSW corpus comfortably across Neon shards (`496 MB` + `425 MB` + `640 MB`) with 100% hybrid vector+FTS coverage
 
 ## Blockers
 (none)
