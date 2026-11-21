@@ -333,6 +333,7 @@ export default function Home() {
   const [classLevel, setClassLevel] = useState<number>(8);
   const [subject, setSubject] = useState<string>("science");
   const [catalog, setCatalog] = useState<CatalogBook[]>(FALLBACK_CATALOG);
+  const [catalogLoading, setCatalogLoading] = useState<boolean>(true);
   const [question, setQuestion] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [streamPreview, setStreamPreview] = useState<string>("");
@@ -405,14 +406,37 @@ export default function Home() {
         setApiStatus("degraded");
       });
 
+    Promise.resolve().then(() => {
+      if (!active) return;
+      try {
+        const cachedRaw = window.sessionStorage.getItem("pathshala_catalog_v1");
+        if (cachedRaw) {
+          const parsed = JSON.parse(cachedRaw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setCatalog(parsed as CatalogBook[]);
+          }
+        }
+      } catch {
+        // ignore invalid sessionStorage catalog cache
+      }
+    });
+
     fetch(`${API_BASE}/curriculum/catalog`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!active || !data?.books?.length) return;
         setCatalog(data.books as CatalogBook[]);
+        try {
+          window.sessionStorage.setItem("pathshala_catalog_v1", JSON.stringify(data.books));
+        } catch {
+          // ignore sessionStorage quota errors
+        }
       })
       .catch(() => {
         // fallback catalog remains active
+      })
+      .finally(() => {
+        if (active) setCatalogLoading(false);
       });
 
     return () => {
@@ -1050,6 +1074,24 @@ export default function Home() {
           </div>
         )}
 
+        {!isOffline && catalogLoading && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="flex items-center justify-center gap-2 border-b border-[#00e5ff]/25 bg-[#00e5ff]/[0.08] px-4 py-2 text-center text-xs text-[#a5f3fc]"
+          >
+            <span
+              aria-hidden="true"
+              className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[#00e5ff] border-t-transparent"
+            />
+            <span>
+              {uiLang === "bn"
+                ? "সকল শ্রেণি (১–১০) ও বিষয়ের পাঠ্যবই তালিকা লোড হচ্ছে..."
+                : "Loading all classes (1–10) & subjects from NCTB curriculum shards..."}
+            </span>
+          </div>
+        )}
+
         {recommendedChapter && (
           <div className="border-b border-[#00e5ff]/20 bg-[#0d1117] px-4 py-2 text-center text-xs text-slate-200">
             অনুশীলন অগ্রগতি: <span className="font-semibold text-[#00e5ff]">{recommendedChapter.chapter}</span> ·{" "}
@@ -1077,8 +1119,18 @@ export default function Home() {
                     : "Choose your exact NCTB Bangla or English Version textbook, get explanations in your preferred language, and fix likely misconceptions with Concept Rescue."}
                 </p>
                 <div className="mt-4 flex flex-wrap items-center justify-center gap-2 font-mono-code text-[11px] text-slate-300">
-                  <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1">
-                    {catalog.length} NCTB Books (Bangla + English Version)
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1">
+                    {catalogLoading && (
+                      <span
+                        aria-hidden="true"
+                        className="h-2.5 w-2.5 shrink-0 animate-spin rounded-full border-[1.5px] border-[#00e5ff] border-t-transparent"
+                      />
+                    )}
+                    {catalogLoading
+                      ? uiLang === "bn"
+                        ? `পাঠ্যবই লোড হচ্ছে... (${catalog.length} NCTB Books)`
+                        : `Loading books... (${catalog.length} NCTB Books)`
+                      : `${catalog.length} NCTB Books (Bangla + English Version)`}
                   </span>
                   <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-emerald-300">
                     Strict Version Isolation
@@ -1087,6 +1139,37 @@ export default function Home() {
                     Concept Rescue Loop
                   </span>
                 </div>
+
+                {catalogLoading && (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="mt-6 flex w-full max-w-lg items-center gap-4 rounded-2xl border border-[#00e5ff]/30 bg-[#0d1117]/95 p-4 text-left shadow-lg"
+                  >
+                    <div className="relative flex h-10 w-10 shrink-0 items-center justify-center">
+                      <span
+                        aria-hidden="true"
+                        className="absolute inset-0 rounded-full border-2 border-[#00e5ff]/20"
+                      />
+                      <span
+                        aria-hidden="true"
+                        className="h-8 w-8 animate-spin rounded-full border-2 border-[#00e5ff] border-t-transparent"
+                      />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-display text-sm font-semibold text-white">
+                        {uiLang === "bn"
+                          ? "পাঠ্যবই, শ্রেণি ও বিষয় লোড হচ্ছে..."
+                          : "Loading NCTB Classes & Subjects..."}
+                      </div>
+                      <p className="mt-0.5 text-xs text-slate-400">
+                        {uiLang === "bn"
+                          ? "৩টি ডেটাবেস শার্ড থেকে শ্রেণি ১–১০ এর সকল পাঠ্যবই সংযুক্ত করা হচ্ছে"
+                          : "Connecting to 3 database shards for Classes 1–10 textbooks"}
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 <div className="mt-8 grid w-full grid-cols-1 gap-3 sm:grid-cols-2">
                   {STARTER_PROMPTS.map((item, idx) => (
@@ -1578,8 +1661,11 @@ export default function Home() {
                 <select
                   aria-label="পাঠ্যবইয়ের মাধ্যম নির্বাচন করুন"
                   value={textbookMedium}
+                  disabled={catalogLoading}
                   onChange={(e) => handleMediumChange(e.target.value as "bangla_version" | "english_version")}
-                  className="rounded-lg border border-[#00e5ff]/30 bg-[#111827] px-2.5 py-1 text-xs font-medium text-[#00e5ff] focus:border-[#00e5ff] focus:outline-none"
+                  className={`rounded-lg border border-[#00e5ff]/30 bg-[#111827] px-2.5 py-1 text-xs font-medium text-[#00e5ff] focus:border-[#00e5ff] focus:outline-none ${
+                    catalogLoading ? "cursor-wait opacity-70" : ""
+                  }`}
                 >
                   <option value="bangla_version">পাঠ্যবই: বাংলা ভার্সন</option>
                   <option value="english_version">Textbook: English Version</option>
@@ -1587,8 +1673,11 @@ export default function Home() {
                 <select
                   aria-label="শ্রেণি নির্বাচন করুন"
                   value={classLevel}
+                  disabled={catalogLoading}
                   onChange={(e) => handleClassChange(Number(e.target.value))}
-                  className="rounded-lg border border-white/10 bg-[#111827] px-2.5 py-1 text-xs font-medium text-slate-200 focus:border-[#00e5ff] focus:outline-none"
+                  className={`rounded-lg border border-white/10 bg-[#111827] px-2.5 py-1 text-xs font-medium text-slate-200 focus:border-[#00e5ff] focus:outline-none ${
+                    catalogLoading ? "cursor-wait opacity-70" : ""
+                  }`}
                 >
                   {availableClasses.map((c) => (
                     <option key={c} value={c}>
@@ -1599,8 +1688,11 @@ export default function Home() {
                 <select
                   aria-label="বিষয় নির্বাচন করুন"
                   value={subject}
+                  disabled={catalogLoading}
                   onChange={(e) => setSubject(e.target.value)}
-                  className="rounded-lg border border-white/10 bg-[#111827] px-2.5 py-1 text-xs font-medium text-slate-200 focus:border-[#00e5ff] focus:outline-none"
+                  className={`rounded-lg border border-white/10 bg-[#111827] px-2.5 py-1 text-xs font-medium text-slate-200 focus:border-[#00e5ff] focus:outline-none ${
+                    catalogLoading ? "cursor-wait opacity-70" : ""
+                  }`}
                 >
                   <option value="">{uiLang === "bn" ? "সকল বিষয়" : "All Subjects"}</option>
                   {availableSubjects.map((slug) => (
@@ -1618,6 +1710,19 @@ export default function Home() {
                   <option value="bn">ব্যাখ্যার ভাষা: বাংলা</option>
                   <option value="en">Answer Lang: English</option>
                 </select>
+                {catalogLoading && (
+                  <span
+                    role="status"
+                    aria-live="polite"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-[#00e5ff]/30 bg-[#00e5ff]/10 px-2.5 py-1 font-mono-code text-[11px] text-[#00e5ff]"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-[#00e5ff] border-t-transparent"
+                    />
+                    {uiLang === "bn" ? "শ্রেণি ও বিষয় লোড হচ্ছে..." : "Loading classes & subjects..."}
+                  </span>
+                )}
               </div>
 
               <div className="flex items-end gap-2">

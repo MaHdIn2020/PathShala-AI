@@ -1,8 +1,18 @@
 """Postgres helpers (psycopg3). Logging is best-effort: never break an answer because logging failed."""
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import time
 
 from .config import get_config
 from .security import scrub_pii
+
+_CATALOG_CACHE: dict[tuple[str, ...], tuple[float, list[dict]]] = {}
+_CATALOG_TTL_SEC = 300.0
+
+
+def clear_catalog_cache() -> None:
+    """Clear the in-memory curriculum catalog cache across all shard sets."""
+    _CATALOG_CACHE.clear()
 
 
 def resolve_db_url(textbook_medium: str | None = None, class_level: int | None = None, cfg=None) -> str:
@@ -124,29 +134,51 @@ def merge_shard_books(shard_rows: list[tuple[str, list[dict]]], cfg=None) -> lis
     return out
 
 
-def get_curriculum_catalog(cfg=None) -> list[dict]:
+def _fetch_shard_catalog(url: str, cfg) -> tuple[str, list[dict]] | None:
+    try:
+        with get_conn(cfg, db_url=url) as c, c.cursor() as cur:
+            cur.execute(
+                """select t.id, t.curriculum_id, t.textbook_medium, t.edition_year, t.class_level, t.subject,
+                          t.title, t.source, t.source_license,
+                          count(c.id) as chunk_count,
+                          count(c.embedding) as embedded_count
+                   from textbooks t
+                   join chunks c on c.textbook_id = t.id
+                   where t.textbook_medium in ('bangla_version', 'english_version')
+                   group by t.id
+                   having count(c.id) > 0
+                   order by t.curriculum_id, t.textbook_medium, t.class_level, t.subject"""
+            )
+            return url, cur.fetchall()
+    except Exception:
+        return None
+
+
+def get_curriculum_catalog(cfg=None, *, use_cache: bool = True) -> list[dict]:
     """Return available textbooks across all shards with chunk/embedding counts, excluding unknown medium."""
     cfg = cfg or get_config()
+    urls = tuple(all_shard_urls(cfg))
+    if use_cache and urls in _CATALOG_CACHE:
+        ts, cached = _CATALOG_CACHE[urls]
+        if (time.monotonic() - ts) < _CATALOG_TTL_SEC:
+            return [dict(item) for item in cached]
+
     shard_rows: list[tuple[str, list[dict]]] = []
-    for url in all_shard_urls(cfg):
-        try:
-            with get_conn(cfg, db_url=url) as c, c.cursor() as cur:
-                cur.execute(
-                    """select t.id, t.curriculum_id, t.textbook_medium, t.edition_year, t.class_level, t.subject,
-                              t.title, t.source, t.source_license,
-                              count(c.id) as chunk_count,
-                              count(c.embedding) as embedded_count
-                       from textbooks t
-                       join chunks c on c.textbook_id = t.id
-                       where t.textbook_medium in ('bangla_version', 'english_version')
-                       group by t.id
-                       having count(c.id) > 0
-                       order by t.curriculum_id, t.textbook_medium, t.class_level, t.subject"""
-                )
-                shard_rows.append((url, cur.fetchall()))
-        except Exception:
-            continue
-    return merge_shard_books(shard_rows, cfg=cfg)
+    if len(urls) <= 1:
+        for url in urls:
+            res = _fetch_shard_catalog(url, cfg)
+            if res is not None:
+                shard_rows.append(res)
+    else:
+        with ThreadPoolExecutor(max_workers=len(urls)) as executor:
+            for res in executor.map(lambda u: _fetch_shard_catalog(u, cfg), urls):
+                if res is not None:
+                    shard_rows.append(res)
+
+    merged = merge_shard_books(shard_rows, cfg=cfg)
+    if use_cache and merged:
+        _CATALOG_CACHE[urls] = (time.monotonic(), [dict(item) for item in merged])
+    return merged
 
 
 def is_curriculum_available(

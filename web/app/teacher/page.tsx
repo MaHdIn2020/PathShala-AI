@@ -188,10 +188,23 @@ export default function TeacherPage() {
         )}
 
         {loading && (
-          <div className="grid grid-cols-2 gap-4 animate-pulse md:grid-cols-4">
-            {[1, 2, 3, 4].map((i) => (
-              <div key={i} className="h-24 rounded-2xl border border-white/10 bg-[#0d1117]" />
-            ))}
+          <div className="space-y-4">
+            <div
+              role="status"
+              aria-live="polite"
+              className="flex items-center gap-3 rounded-2xl border border-[#00e5ff]/30 bg-[#0d1117] px-4 py-3 text-sm text-[#a5f3fc]"
+            >
+              <span
+                aria-hidden="true"
+                className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-[#00e5ff] border-t-transparent"
+              />
+              <span>শিক্ষক ড্যাশবোর্ড ডেটা লোড হচ্ছে...</span>
+            </div>
+            <div className="grid grid-cols-2 gap-4 animate-pulse md:grid-cols-4">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="h-24 rounded-2xl border border-white/10 bg-[#0d1117]" />
+              ))}
+            </div>
           </div>
         )}
 

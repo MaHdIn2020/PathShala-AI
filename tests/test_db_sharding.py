@@ -3,7 +3,13 @@ import unittest
 from unittest.mock import patch
 
 from pathshala.config import Config, get_config
-from pathshala.db import all_shard_urls, merge_shard_books, resolve_db_url
+from pathshala.db import (
+    all_shard_urls,
+    clear_catalog_cache,
+    get_curriculum_catalog,
+    merge_shard_books,
+    resolve_db_url,
+)
 
 
 def _make_cfg(primary="postgresql://p/main", bn_ssc="postgresql://p/bn_ssc", en="postgresql://p/en"):
@@ -81,6 +87,96 @@ class DbShardingTest(unittest.TestCase):
             [(b["textbook_medium"], b["class_level"]) for b in merged],
             [("bangla_version", 5), ("bangla_version", 9), ("english_version", 8)],
         )
+
+    def test_get_curriculum_catalog_parallel_fetch_and_cache(self):
+        clear_catalog_cache()
+        cfg = _make_cfg()
+        calls: list[str] = []
+
+        class FakeCursor:
+            def __init__(self, url: str):
+                self.url = url
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def execute(self, _sql: str):
+                return None
+
+            def fetchall(self) -> list[dict]:
+                if self.url.endswith("/main"):
+                    return [
+                        {
+                            "id": 1,
+                            "curriculum_id": "nctb",
+                            "textbook_medium": "bangla_version",
+                            "class_level": 5,
+                            "subject": "science",
+                            "title": "NCTB শ্রেণি 5 · science",
+                            "chunk_count": 120,
+                            "embedded_count": 120,
+                        }
+                    ]
+                if self.url.endswith("/bn_ssc"):
+                    return [
+                        {
+                            "id": 2,
+                            "curriculum_id": "nctb",
+                            "textbook_medium": "bangla_version",
+                            "class_level": 9,
+                            "subject": "physics_secondary",
+                            "title": "NCTB শ্রেণি 9 · physics_secondary",
+                            "chunk_count": 500,
+                            "embedded_count": 500,
+                        }
+                    ]
+                return [
+                    {
+                        "id": 3,
+                        "curriculum_id": "nctb",
+                        "textbook_medium": "english_version",
+                        "class_level": 8,
+                        "subject": "science",
+                        "title": "NCTB Class 8 · science",
+                        "chunk_count": 824,
+                        "embedded_count": 824,
+                    }
+                ]
+
+        class FakeConn:
+            def __init__(self, url: str):
+                self.url = url
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def cursor(self):
+                return FakeCursor(self.url)
+
+        def fake_get_conn(_cfg=None, *, textbook_medium=None, class_level=None, db_url=None):
+            calls.append(db_url)
+            return FakeConn(db_url)
+
+        try:
+            with patch("pathshala.db.get_conn", side_effect=fake_get_conn):
+                first = get_curriculum_catalog(cfg)
+                second = get_curriculum_catalog(cfg)
+                self.assertEqual(len(first), 3)
+                self.assertEqual(len(second), 3)
+                self.assertEqual(len(calls), 3)
+
+                clear_catalog_cache()
+                third = get_curriculum_catalog(cfg)
+                self.assertEqual(len(third), 3)
+                self.assertEqual(len(calls), 6)
+        finally:
+            clear_catalog_cache()
 
 
 if __name__ == "__main__":
