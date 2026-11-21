@@ -76,7 +76,7 @@ def fts_search(
     if not tsq:
         return []
     p = {"curr": curriculum_id, "med": textbook_medium, "cl": class_level, "subj": subject, "tsq": tsq, "k": k}
-    with get_conn(cfg) as c, c.cursor() as cur:
+    with get_conn(cfg, textbook_medium=textbook_medium, class_level=class_level) as c, c.cursor() as cur:
         cur.execute(
             f"""select {_COLS}, ts_rank(c.fts, to_tsquery('simple', %(tsq)s)) as rank
                 from chunks c join textbooks t on t.id=c.textbook_id
@@ -164,7 +164,7 @@ def hybrid_search(
     }
     rows: dict = {}
     vec_ids, kw_ids = [], []
-    with get_conn(cfg) as c, c.cursor() as cur:
+    with get_conn(cfg, textbook_medium=textbook_medium, class_level=class_level) as c, c.cursor() as cur:
         cur.execute(
             f"""select {_COLS}, 1 - (c.embedding <=> %(vec)s::vector) as sim
                 from chunks c join textbooks t on t.id=c.textbook_id

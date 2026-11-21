@@ -88,16 +88,45 @@ def health():
 
 @app.get("/health/ready")
 def health_ready():
-    """Readiness check verifying Postgres connectivity and textbook counts by medium."""
-    try:
-        with db.get_conn() as c, c.cursor() as cur:
-            cur.execute(
-                "select textbook_medium, count(*) as books from textbooks group by textbook_medium order by textbook_medium"
-            )
-            books = cur.fetchall()
-        return {"ok": True, "db": "ready", "books_by_medium": books}
-    except Exception:
-        return JSONResponse({"ok": False, "db": "unavailable"}, status_code=503)
+    """Readiness check verifying Postgres connectivity across all configured shards."""
+    cfg = get_config()
+    shard_map = [
+        ("primary", cfg.database_url),
+        ("bn_ssc", cfg.database_url_bn_ssc),
+        ("en", cfg.database_url_en),
+    ]
+    seen_urls: dict[str, str] = {}
+    shards: dict[str, dict] = {}
+    books_by_medium: dict[str, int] = {}
+    all_ok = True
+
+    for label, url in shard_map:
+        if url in seen_urls:
+            shards[label] = {"same_as": seen_urls[url], "ok": shards[seen_urls[url]]["ok"]}
+            continue
+        seen_urls[url] = label
+        try:
+            with db.get_conn(cfg, db_url=url) as c, c.cursor() as cur:
+                cur.execute(
+                    "select textbook_medium, count(*) as books from textbooks group by textbook_medium order by textbook_medium"
+                )
+                rows = cur.fetchall()
+                shards[label] = {"ok": True, "books_by_medium": rows}
+                for r in rows:
+                    med = r["textbook_medium"]
+                    books_by_medium[med] = books_by_medium.get(med, 0) + int(r["books"])
+        except Exception:
+            shards[label] = {"ok": False}
+            all_ok = False
+
+    if not all_ok:
+        return JSONResponse({"ok": False, "db": "degraded", "shards": shards}, status_code=503)
+    return {
+        "ok": True,
+        "db": "ready",
+        "books_by_medium": [{"textbook_medium": k, "books": v} for k, v in sorted(books_by_medium.items())],
+        "shards": shards,
+    }
 
 
 @app.get("/curriculum/catalog")
@@ -300,7 +329,13 @@ def practice(req: AskReq):
     """3 practice questions on a topic (the `question` field), grounded in retrieved chunks."""
     from . import practice as practice_mod
 
-    return practice_mod.practice(req.question, req.class_level, req.subject)
+    return practice_mod.practice(
+        req.question,
+        req.class_level,
+        req.subject,
+        curriculum_id=req.curriculum_id,
+        textbook_medium=req.textbook_medium,
+    )
 
 
 class PracticeAttemptReq(BaseModel):
@@ -427,8 +462,8 @@ def feedback(req: FeedbackReq):
 
 
 @app.get("/cite/{chunk_id}")
-def cite(chunk_id: int):
-    c = db.get_chunk(chunk_id)
+def cite(chunk_id: int, textbook_medium: str | None = None, class_level: int | None = None, chunk_ref: str | None = None):
+    c = db.get_chunk(chunk_id, textbook_medium=textbook_medium, class_level=class_level, chunk_ref=chunk_ref)
     if not c:
         raise HTTPException(404, "chunk not found")
     return c

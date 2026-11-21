@@ -6,7 +6,17 @@ from .text import normalize_bangla
 N_QUESTIONS = 3
 
 
-def practice(topic: str, class_level: int, subject: str | None = None, *, cfg=None, retrieve_fn=None, llm_fn=None) -> dict:
+def practice(
+    topic: str,
+    class_level: int,
+    subject: str | None = None,
+    *,
+    curriculum_id: str = "nctb",
+    textbook_medium: str = "bangla_version",
+    cfg=None,
+    retrieve_fn=None,
+    llm_fn=None,
+) -> dict:
     """Returns {questions: [{q, a, level, chunk_id, chunk_ref}], refused, reason, topic, cost_usd}.
     Every question must cite a chunk that was really retrieved; others are dropped. Needs all 3 or it refuses."""
     cfg = cfg or get_config()
@@ -17,7 +27,14 @@ def practice(topic: str, class_level: int, subject: str | None = None, *, cfg=No
         from . import retrieval
 
         def retrieve_fn(q, c, s, cf):
-            return retrieval.search(q, c, s, cfg=cf)
+            return retrieval.search(
+                q,
+                c,
+                s,
+                cfg=cf,
+                curriculum_id=curriculum_id,
+                textbook_medium=textbook_medium,
+            )
 
     if llm_fn is None:
         from . import llm

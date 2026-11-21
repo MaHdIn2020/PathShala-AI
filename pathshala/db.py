@@ -5,23 +5,63 @@ from .config import get_config
 from .security import scrub_pii
 
 
-def get_conn(cfg=None):
+def resolve_db_url(textbook_medium: str | None = None, class_level: int | None = None, cfg=None) -> str:
+    """Route textbook queries to the proper DB shard:
+    - ('english_version', any class) -> cfg.database_url_en
+    - ('bangla_version', class >= 9) -> cfg.database_url_bn_ssc
+    - ('bangla_version', class <= 8) / default -> cfg.database_url
+    """
+    cfg = cfg or get_config()
+    med = (textbook_medium or "bangla_version").strip().lower()
+    if med == "english_version":
+        return cfg.database_url_en
+    if med == "bangla_version" and class_level is not None and int(class_level) >= 9:
+        return cfg.database_url_bn_ssc
+    return cfg.database_url
+
+
+def all_shard_urls(cfg=None) -> list[str]:
+    """Unique database URLs across primary, Bangla SSC, and English shards (preserving order)."""
+    cfg = cfg or get_config()
+    urls = []
+    for u in (cfg.database_url, cfg.database_url_bn_ssc, cfg.database_url_en):
+        if u and u not in urls:
+            urls.append(u)
+    return urls
+
+
+def get_conn(
+    cfg=None,
+    *,
+    textbook_medium: str | None = None,
+    class_level: int | None = None,
+    db_url: str | None = None,
+):
     import psycopg
     from psycopg.rows import dict_row
 
     cfg = cfg or get_config()
-    return psycopg.connect(cfg.database_url, row_factory=dict_row)
+    target = db_url or resolve_db_url(textbook_medium, class_level, cfg)
+    return psycopg.connect(target, row_factory=dict_row)
 
 
 def apply_migrations(migrations_dir: Path | None = None, cfg=None) -> list[str]:
-    """Execute sorted SQL migration files idempotently."""
-    mdir = migrations_dir or (Path(__file__).resolve().parent.parent / "db" / "migrations")
+    """Execute base schema.sql and sorted SQL migration files idempotently across all DB shards."""
+    root_db = Path(__file__).resolve().parent.parent / "db"
+    schema_file = root_db / "schema.sql"
+    mdir = migrations_dir or (root_db / "migrations")
     files = sorted(mdir.glob("*.sql"))
     applied = []
-    with get_conn(cfg) as c, c.cursor() as cur:
-        for f in files:
-            cur.execute(f.read_text(encoding="utf-8"))
-            applied.append(f.name)
+    for url in all_shard_urls(cfg):
+        with get_conn(cfg, db_url=url) as c, c.cursor() as cur:
+            if migrations_dir is None and schema_file.exists():
+                cur.execute(schema_file.read_text(encoding="utf-8"))
+                if "schema.sql" not in applied:
+                    applied.append("schema.sql")
+            for f in files:
+                cur.execute(f.read_text(encoding="utf-8"))
+                if f.name not in applied:
+                    applied.append(f.name)
     return applied
 
 
@@ -57,22 +97,56 @@ def log_feedback(query_id: int, helpful: bool, comment: str | None = None) -> bo
         return False
 
 
-def get_curriculum_catalog(cfg=None) -> list[dict]:
-    """Return available textbooks with chunk/embedding counts, excluding unknown medium."""
-    with get_conn(cfg) as c, c.cursor() as cur:
-        cur.execute(
-            """select t.id, t.curriculum_id, t.textbook_medium, t.edition_year, t.class_level, t.subject,
-                      t.title, t.source, t.source_license,
-                      count(c.id) as chunk_count,
-                      count(c.embedding) as embedded_count
-               from textbooks t
-               join chunks c on c.textbook_id = t.id
-               where t.textbook_medium in ('bangla_version', 'english_version')
-               group by t.id
-               having count(c.id) > 0
-               order by t.curriculum_id, t.textbook_medium, t.class_level, t.subject"""
+def merge_shard_books(shard_rows: list[tuple[str, list[dict]]], cfg=None) -> list[dict]:
+    """Merge textbook rows across shards, preferring the authoritative shard for each textbook identity."""
+    cfg = cfg or get_config()
+    best: dict[tuple[str, str, int, str], tuple[bool, dict]] = {}
+    for url, rows in shard_rows:
+        for r in rows:
+            d = dict(r)
+            curr = d.get("curriculum_id") or "nctb"
+            med = d.get("textbook_medium") or "bangla_version"
+            cls = int(d.get("class_level") or 0)
+            subj = d.get("subject") or ""
+            key = (curr, med, cls, subj)
+            is_auth = resolve_db_url(med, cls, cfg) == url
+            if key not in best or (is_auth and not best[key][0]):
+                best[key] = (is_auth, d)
+    out = [v[1] for v in best.values()]
+    out.sort(
+        key=lambda x: (
+            x.get("curriculum_id") or "nctb",
+            x.get("textbook_medium") or "",
+            int(x.get("class_level") or 0),
+            x.get("subject") or "",
         )
-        return cur.fetchall()
+    )
+    return out
+
+
+def get_curriculum_catalog(cfg=None) -> list[dict]:
+    """Return available textbooks across all shards with chunk/embedding counts, excluding unknown medium."""
+    cfg = cfg or get_config()
+    shard_rows: list[tuple[str, list[dict]]] = []
+    for url in all_shard_urls(cfg):
+        try:
+            with get_conn(cfg, db_url=url) as c, c.cursor() as cur:
+                cur.execute(
+                    """select t.id, t.curriculum_id, t.textbook_medium, t.edition_year, t.class_level, t.subject,
+                              t.title, t.source, t.source_license,
+                              count(c.id) as chunk_count,
+                              count(c.embedding) as embedded_count
+                       from textbooks t
+                       join chunks c on c.textbook_id = t.id
+                       where t.textbook_medium in ('bangla_version', 'english_version')
+                       group by t.id
+                       having count(c.id) > 0
+                       order by t.curriculum_id, t.textbook_medium, t.class_level, t.subject"""
+                )
+                shard_rows.append((url, cur.fetchall()))
+        except Exception:
+            continue
+    return merge_shard_books(shard_rows, cfg=cfg)
 
 
 def is_curriculum_available(
@@ -82,10 +156,10 @@ def is_curriculum_available(
     curriculum_id: str = "nctb",
     cfg=None,
 ) -> bool:
-    """True only if verified chunks exist for the exact curriculum/medium/class/(subject)."""
+    """True only if verified chunks exist on the target shard for the exact curriculum/medium/class/(subject)."""
     if textbook_medium not in ("bangla_version", "english_version"):
         return False
-    with get_conn(cfg) as c, c.cursor() as cur:
+    with get_conn(cfg, textbook_medium=textbook_medium, class_level=class_level) as c, c.cursor() as cur:
         cur.execute(
             """select exists (
                    select 1
@@ -339,38 +413,125 @@ def teacher_summary(limit: int = 50, min_group_size: int = 3) -> dict:
     )
 
 
-def get_chunk(chunk_id: int) -> dict | None:
-    with get_conn() as c, c.cursor() as cur:
-        cur.execute(
-            """select c.id, c.chunk_ref, c.text, c.chapter_no, c.chapter, c.page_start, c.page_end,
-                      t.title as book, t.curriculum_id, t.textbook_medium, t.edition_year, t.class_level, t.subject
-               from chunks c join textbooks t on t.id=c.textbook_id where c.id=%s""",
-            (chunk_id,),
-        )
-        return cur.fetchone()
+def _infer_shard_from_ref(chunk_ref: str | None) -> tuple[str | None, int | None]:
+    if not chunk_ref:
+        return None, None
+    ref = chunk_ref.strip()
+    med = "english_version" if ref.startswith("en-") else "bangla_version"
+    raw = ref[3:] if ref.startswith("en-") else ref
+    head = raw.split("-", 1)[0]
+    cls = int(head) if head.isdigit() else None
+    return med, cls
 
 
-def get_chapter(book_id: int, chapter_no: int) -> list[dict]:
-    with get_conn() as c, c.cursor() as cur:
-        cur.execute(
-            "select id, chunk_ref, text, chapter_no, chapter, page_start, page_end from chunks where textbook_id=%s and chapter_no=%s order by id",
-            (book_id, chapter_no),
-        )
-        return cur.fetchall()
+def get_chunk(
+    chunk_id: int,
+    *,
+    textbook_medium: str | None = None,
+    class_level: int | None = None,
+    chunk_ref: str | None = None,
+    cfg=None,
+) -> dict | None:
+    cfg = cfg or get_config()
+    if textbook_medium is None and chunk_ref:
+        textbook_medium, inferred_cls = _infer_shard_from_ref(chunk_ref)
+        if class_level is None:
+            class_level = inferred_cls
+
+    urls = all_shard_urls(cfg)
+    if textbook_medium is not None or class_level is not None:
+        preferred = resolve_db_url(textbook_medium, class_level, cfg)
+        urls = [preferred] + [u for u in urls if u != preferred]
+
+    sql_by_ref = """select c.id, c.chunk_ref, c.text, c.chapter_no, c.chapter, c.page_start, c.page_end,
+                           t.title as book, t.curriculum_id, t.textbook_medium, t.edition_year, t.class_level, t.subject
+                    from chunks c join textbooks t on t.id=c.textbook_id where c.chunk_ref=%s"""
+    sql_by_id = """select c.id, c.chunk_ref, c.text, c.chapter_no, c.chapter, c.page_start, c.page_end,
+                          t.title as book, t.curriculum_id, t.textbook_medium, t.edition_year, t.class_level, t.subject
+                   from chunks c join textbooks t on t.id=c.textbook_id where c.id=%s"""
+
+    for url in urls:
+        try:
+            with get_conn(cfg, db_url=url) as c, c.cursor() as cur:
+                if chunk_ref:
+                    cur.execute(sql_by_ref, (chunk_ref,))
+                    row = cur.fetchone()
+                    if row:
+                        return row
+                cur.execute(sql_by_id, (chunk_id,))
+                row = cur.fetchone()
+                if row:
+                    return row
+        except Exception:
+            continue
+    return None
 
 
-def list_chapters(book_id: int) -> list[dict]:
-    with get_conn() as c, c.cursor() as cur:
-        cur.execute(
-            "select chapter_no, chapter, min(page_start) as page_start, max(page_end) as page_end, count(*) as chunks from chunks where textbook_id=%s group by chapter_no, chapter order by chapter_no",
-            (book_id,),
-        )
-        return cur.fetchall()
+def get_chapter(
+    book_id: int,
+    chapter_no: int,
+    *,
+    textbook_medium: str | None = None,
+    class_level: int | None = None,
+    cfg=None,
+) -> list[dict]:
+    cfg = cfg or get_config()
+    urls = all_shard_urls(cfg)
+    if textbook_medium is not None or class_level is not None:
+        preferred = resolve_db_url(textbook_medium, class_level, cfg)
+        urls = [preferred] + [u for u in urls if u != preferred]
+    for url in urls:
+        try:
+            with get_conn(cfg, db_url=url) as c, c.cursor() as cur:
+                cur.execute(
+                    "select id, chunk_ref, text, chapter_no, chapter, page_start, page_end from chunks where textbook_id=%s and chapter_no=%s order by id",
+                    (book_id, chapter_no),
+                )
+                rows = cur.fetchall()
+                if rows:
+                    return rows
+        except Exception:
+            continue
+    return []
 
 
-def list_books() -> list[dict]:
-    with get_conn() as c, c.cursor() as cur:
-        cur.execute(
-            "select id, title, curriculum_id, textbook_medium, edition_year, class_level, subject from textbooks order by curriculum_id, textbook_medium, class_level, subject"
-        )
-        return cur.fetchall()
+def list_chapters(
+    book_id: int,
+    *,
+    textbook_medium: str | None = None,
+    class_level: int | None = None,
+    cfg=None,
+) -> list[dict]:
+    cfg = cfg or get_config()
+    urls = all_shard_urls(cfg)
+    if textbook_medium is not None or class_level is not None:
+        preferred = resolve_db_url(textbook_medium, class_level, cfg)
+        urls = [preferred] + [u for u in urls if u != preferred]
+    for url in urls:
+        try:
+            with get_conn(cfg, db_url=url) as c, c.cursor() as cur:
+                cur.execute(
+                    "select chapter_no, chapter, min(page_start) as page_start, max(page_end) as page_end, count(*) as chunks from chunks where textbook_id=%s group by chapter_no, chapter order by chapter_no",
+                    (book_id,),
+                )
+                rows = cur.fetchall()
+                if rows:
+                    return rows
+        except Exception:
+            continue
+    return []
+
+
+def list_books(cfg=None) -> list[dict]:
+    cfg = cfg or get_config()
+    shard_rows: list[tuple[str, list[dict]]] = []
+    for url in all_shard_urls(cfg):
+        try:
+            with get_conn(cfg, db_url=url) as c, c.cursor() as cur:
+                cur.execute(
+                    "select id, title, curriculum_id, textbook_medium, edition_year, class_level, subject from textbooks order by curriculum_id, textbook_medium, class_level, subject"
+                )
+                shard_rows.append((url, cur.fetchall()))
+        except Exception:
+            continue
+    return merge_shard_books(shard_rows, cfg=cfg)

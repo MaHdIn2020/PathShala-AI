@@ -79,7 +79,7 @@ def _resolve_chunks(
         from . import db, retrieval
 
         if chunk_id is not None:
-            one = db.get_chunk(chunk_id)
+            one = db.get_chunk(chunk_id, textbook_medium=textbook_medium, class_level=class_level)
             if one and one.get("textbook_medium") == textbook_medium and int(one.get("class_level") or 0) == int(class_level):
                 chunks.append({**one, "sim": 0.9})
         found = retrieval.search(

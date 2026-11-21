@@ -1,19 +1,22 @@
-"""Embeddings. EMBED_PROVIDER=local -> sentence-transformers (bge-m3, 1024-d); litellm -> hosted API."""
+"""Embeddings. EMBED_PROVIDER=local -> sentence-transformers (bge-m3, 1024-d, CUDA auto-selected); litellm -> hosted API."""
 from .config import get_config
 
 _model = None
+_device = None
 
 
 def _local(texts: list[str], model_name: str) -> list[list[float]]:
-    global _model
+    global _model, _device
     if _model is None:
         import torch
         from sentence_transformers import SentenceTransformer
 
-        # bfloat16 + capped length keep RAM low on small machines (fp32 bge-m3 needs ~2.3 GB)
-        _model = SentenceTransformer(model_name, model_kwargs={"torch_dtype": torch.bfloat16})
+        _device = "cuda" if torch.cuda.is_available() else "cpu"
+        # bfloat16 + max_seq_length 512 keep VRAM (~1.1 GB on RTX 4060) and CPU RAM low
+        _model = SentenceTransformer(model_name, device=_device, model_kwargs={"torch_dtype": torch.bfloat16})
         _model.max_seq_length = 512
-    return _model.encode(texts, normalize_embeddings=True, batch_size=4, show_progress_bar=False).tolist()
+    bs = 64 if _device == "cuda" else 4
+    return _model.encode(texts, normalize_embeddings=True, batch_size=bs, show_progress_bar=False).tolist()
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:

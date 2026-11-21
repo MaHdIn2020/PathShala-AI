@@ -1,4 +1,4 @@
-"""Central config. All knobs come from env (.env). No pydantic needed."""
+"""Central config. All knobs come from env (.env). Supports 3-DB sharding with single-DB fallback."""
 import os
 from dataclasses import dataclass
 
@@ -10,10 +10,12 @@ def _b(name: str, default: bool) -> bool:
 @dataclass(frozen=True)
 class Config:
     database_url: str
+    database_url_bn_ssc: str
+    database_url_en: str
     llm_model: str
     llm_fast_model: str
     llm_verify_model: str
-    embed_provider: str  # local | litellm
+    embed_provider: str  # local | litellm | fts
     embed_model: str
     embed_dim: int
     retrieve_k: int
@@ -34,10 +36,15 @@ def get_config() -> Config:
         load_dotenv()
     except Exception:
         pass
+    db_primary = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/pathshala")
+    db_bn_ssc = (os.getenv("DATABASE_URL_BN_SSC") or "").strip() or db_primary
+    db_en = (os.getenv("DATABASE_URL_EN") or "").strip() or db_primary
     llm = os.getenv("LLM_MODEL", "gemini/gemini-flash-latest")
     fast = os.getenv("LLM_FAST_MODEL", llm)
     return Config(
-        database_url=os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/pathshala"),
+        database_url=db_primary,
+        database_url_bn_ssc=db_bn_ssc,
+        database_url_en=db_en,
         llm_model=llm,
         llm_fast_model=fast,
         llm_verify_model=os.getenv("LLM_VERIFY_MODEL", llm),

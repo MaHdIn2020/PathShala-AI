@@ -1,7 +1,7 @@
-"""Ingest NCTB datasets -> Postgres.
+"""Ingest NCTB datasets -> 3-shard Postgres.
 Usage:
-  python -m ingest.run --data data/raw/NCTB-SchoolText-English --medium english_version --max-class 0 --no-ctx --fts-only
-Steps: load -> prepare -> (optional ctx) -> (optional embed via bge-m3) -> batched upsert. Re-runnable and idempotent."""
+  python -m ingest.run --data data/raw/NCTB-SchoolText-English --medium english_version --max-class 0 --no-ctx
+Steps: load -> prepare -> (optional ctx) -> (optional embed via bge-m3 on GPU/CPU) -> shard-routed batched upsert."""
 import argparse
 import hashlib
 import sys
@@ -66,7 +66,7 @@ def contextualise(recs: list[dict], cfg, workers: int = 4) -> float:
     return cost[0]
 
 
-def embed_all(recs: list[dict], batch: int = 8) -> None:
+def embed_all(recs: list[dict], batch: int = 256) -> None:
     from pathshala.embed import embed_texts, to_pgvector
 
     for i in range(0, len(recs), batch):
@@ -84,65 +84,92 @@ def _book_title(curr: str, med: str, cls: int, subj: str) -> str:
     return f"NCTB শ্রেণি {cls} · {subj}"
 
 
-def upsert(recs: list[dict], source_label: str | None = None) -> None:
-    from pathshala.db import get_conn
+def upsert(recs: list[dict], source_label: str | None = None, cfg=None) -> None:
+    from pathshala.db import get_conn, resolve_db_url
 
-    with get_conn() as c, c.cursor() as cur:
-        book_ids: dict = {}
-        for r in recs:
-            curr = r.get("curriculum_id") or "nctb"
-            med = r.get("textbook_medium") or "unknown"
-            k = (curr, med, r["class_level"], r["subject"])
-            if k not in book_ids:
-                src = source_label or (SOURCE_EN if med == "english_version" else SOURCE_BN)
-                cur.execute(
-                    """insert into textbooks(title, curriculum_id, textbook_medium, edition_year, class_level, subject, source, source_license, parser_version)
-                       values (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       on conflict (curriculum_id, textbook_medium, class_level, subject) do update set
-                         title=excluded.title, source=excluded.source, source_license=excluded.source_license, parser_version=excluded.parser_version
-                       returning id""",
-                    (_book_title(*k), curr, med, r.get("edition_year") or 2024, k[2], k[3], src, "CC BY 4.0", "mendeley-v2"),
+    cfg = cfg or get_config()
+    by_shard: dict[str, list[dict]] = {}
+    for r in recs:
+        url = resolve_db_url(r.get("textbook_medium"), r["class_level"], cfg)
+        by_shard.setdefault(url, []).append(r)
+
+    for shard_url, shard_recs in by_shard.items():
+        with get_conn(cfg, db_url=shard_url) as c, c.cursor() as cur:
+            book_ids: dict = {}
+            for r in shard_recs:
+                curr = r.get("curriculum_id") or "nctb"
+                med = r.get("textbook_medium") or "unknown"
+                k = (curr, med, r["class_level"], r["subject"])
+                if k not in book_ids:
+                    src = source_label or (SOURCE_EN if med == "english_version" else SOURCE_BN)
+                    cur.execute(
+                        """insert into textbooks(title, curriculum_id, textbook_medium, edition_year, class_level, subject, source, source_license, parser_version)
+                           values (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                           on conflict (curriculum_id, textbook_medium, class_level, subject) do update set
+                             title=excluded.title, source=excluded.source, source_license=excluded.source_license, parser_version=excluded.parser_version
+                           returning id""",
+                        (_book_title(*k), curr, med, r.get("edition_year") or 2024, k[2], k[3], src, "CC BY 4.0", "mendeley-v2"),
+                    )
+                    book_ids[k] = cur.fetchone()["id"]
+
+            rows = [
+                (
+                    book_ids[(r.get("curriculum_id") or "nctb", r.get("textbook_medium") or "unknown", r["class_level"], r["subject"])],
+                    r["chunk_ref"],
+                    r["chapter_no"],
+                    r["chapter"],
+                    r.get("page_start"),
+                    r.get("page_end"),
+                    r["text"],
+                    r.get("contextual_text") or None,
+                    r.get("embedding"),
+                    max(1, len(r["text"]) // 3),
                 )
-                book_ids[k] = cur.fetchone()["id"]
-
-        rows = [
-            (
-                book_ids[(r.get("curriculum_id") or "nctb", r.get("textbook_medium") or "unknown", r["class_level"], r["subject"])],
-                r["chunk_ref"],
-                r["chapter_no"],
-                r["chapter"],
-                r.get("page_start"),
-                r.get("page_end"),
-                r["text"],
-                r.get("contextual_text") or None,
-                r.get("embedding"),
-                max(1, len(r["text"]) // 3),
+                for r in shard_recs
+            ]
+            cur.executemany(
+                """insert into chunks(textbook_id, chunk_ref, chapter_no, chapter, page_start, page_end, text, contextual_text, embedding, tokens)
+                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s::vector,%s)
+                   on conflict (chunk_ref) do update set
+                     textbook_id=excluded.textbook_id,
+                     text=excluded.text,
+                     chapter=excluded.chapter,
+                     chapter_no=excluded.chapter_no,
+                     page_start=coalesce(excluded.page_start, chunks.page_start),
+                     page_end=coalesce(excluded.page_end, chunks.page_end),
+                     contextual_text=coalesce(excluded.contextual_text, chunks.contextual_text),
+                     embedding=coalesce(excluded.embedding, chunks.embedding)""",
+                rows,
             )
-            for r in recs
-        ]
-        cur.executemany(
-            """insert into chunks(textbook_id, chunk_ref, chapter_no, chapter, page_start, page_end, text, contextual_text, embedding, tokens)
-               values (%s,%s,%s,%s,%s,%s,%s,%s,%s::vector,%s)
-               on conflict (chunk_ref) do update set
-                 textbook_id=excluded.textbook_id,
-                 text=excluded.text,
-                 chapter=excluded.chapter,
-                 chapter_no=excluded.chapter_no,
-                 page_start=coalesce(excluded.page_start, chunks.page_start),
-                 page_end=coalesce(excluded.page_end, chunks.page_end),
-                 contextual_text=coalesce(excluded.contextual_text, chunks.contextual_text),
-                 embedding=coalesce(excluded.embedding, chunks.embedding)""",
-            rows,
-        )
 
 
-def existing_refs(require_embedding: bool = True) -> set:
-    from pathshala.db import get_conn
+def existing_refs(
+    require_embedding: bool = True,
+    *,
+    medium: str | None = None,
+    class_levels: set[int] | None = None,
+    cfg=None,
+) -> set:
+    from pathshala.db import all_shard_urls, get_conn, resolve_db_url
 
-    with get_conn() as c, c.cursor() as cur:
-        sql = "select chunk_ref from chunks where embedding is not null" if require_embedding else "select chunk_ref from chunks"
-        cur.execute(sql)
-        return {r["chunk_ref"] for r in cur.fetchall()}
+    cfg = cfg or get_config()
+    if medium and medium != "auto":
+        cls_set = class_levels or ({1} if medium == "english_version" else {1, 9})
+        urls = []
+        for cl in sorted(cls_set):
+            u = resolve_db_url(medium, cl, cfg)
+            if u not in urls:
+                urls.append(u)
+    else:
+        urls = all_shard_urls(cfg)
+
+    sql = "select chunk_ref from chunks where embedding is not null" if require_embedding else "select chunk_ref from chunks"
+    done = set()
+    for url in urls:
+        with get_conn(cfg, db_url=url) as c, c.cursor() as cur:
+            cur.execute(sql)
+            done.update(r["chunk_ref"] for r in cur.fetchall())
+    return done
 
 
 def main(argv=None) -> int:
@@ -188,14 +215,17 @@ def main(argv=None) -> int:
     if not a.no_ctx:
         print(f"contextualised; llm cost ~${contextualise(recs, cfg):.4f}")
     if not a.force:
-        done = existing_refs(require_embedding=not a.fts_only)
+        meds = {r.get("textbook_medium") for r in recs}
+        med_arg = next(iter(meds)) if len(meds) == 1 else a.medium
+        cls_arg = {r["class_level"] for r in recs}
+        done = existing_refs(require_embedding=not a.fts_only, medium=med_arg, class_levels=cls_arg, cfg=cfg)
         recs = [r for r in recs if r["chunk_ref"] not in done]
         print(f"{len(done)} already in DB; {len(recs)} to do")
     for i in range(0, len(recs), a.save_every):
         part = recs[i : i + a.save_every]
         if not a.fts_only:
             embed_all(part)
-        upsert(part)
+        upsert(part, cfg=cfg)
         print(f"saved {min(i + a.save_every, len(recs))}/{len(recs)}  elapsed {time.time() - t0:.0f}s", flush=True)
     print(f"done in {time.time() - t0:.0f}s")
     return 0
