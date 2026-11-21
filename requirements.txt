@@ -3,7 +3,7 @@ uvicorn[standard]>=0.29
 pydantic>=2
 psycopg[binary]>=3.1
 litellm>=1.40
-sentence-transformers>=3.0
+# sentence-transformers>=3.0  # local GPU/CPU embeddings only; Render uses EMBED_PROVIDER=fts
 python-dotenv>=1.0
 langgraph>=0.2
 mcp>=1.2

@@ -459,6 +459,7 @@ export default function Home() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const turnSeqRef = useRef<number>(0);
   const sessionIdRef = useRef<string>("anon-web");
+  const supportsStreamRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -501,15 +502,6 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
-    fetchWithRetry(`${API_BASE}/health`, { method: "GET" }, 15000, 1)
-      .then((res) => {
-        if (!active) return;
-        setApiStatus(res.ok ? "ready" : "degraded");
-      })
-      .catch(() => {
-        if (!active) return;
-        setApiStatus("degraded");
-      });
 
     Promise.resolve().then(() => {
       if (!active) return;
@@ -526,23 +518,52 @@ export default function Home() {
       }
     });
 
-    fetch(`${API_BASE}/curriculum/catalog`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (!active || !data?.books?.length) return;
-        setCatalog(data.books as CatalogBook[]);
+    (async () => {
+      try {
+        let specLoaded = false;
         try {
-          window.sessionStorage.setItem("pathshala_catalog_v1", JSON.stringify(data.books));
+          const specRes = await fetchWithRetry(`${API_BASE}/openapi.json`, { method: "GET" }, 15000, 1);
+          if (!active) return;
+          if (specRes.ok) {
+            specLoaded = true;
+            setApiStatus("ready");
+            const spec = (await specRes.json()) as { paths?: Record<string, unknown> };
+            if (!active) return;
+            const paths = spec?.paths && typeof spec.paths === "object" ? spec.paths : {};
+            supportsStreamRef.current = Boolean(paths["/ask/stream"]);
+            if (paths["/curriculum/catalog"]) {
+              const catRes = await fetch(`${API_BASE}/curriculum/catalog`);
+              if (catRes.ok) {
+                const data = await catRes.json();
+                if (active && data?.books?.length) {
+                  setCatalog(data.books as CatalogBook[]);
+                  try {
+                    window.sessionStorage.setItem("pathshala_catalog_v1", JSON.stringify(data.books));
+                  } catch {
+                    // ignore sessionStorage quota errors
+                  }
+                }
+              }
+            }
+          }
         } catch {
-          // ignore sessionStorage quota errors
+          // fall back to /health probe below
         }
-      })
-      .catch(() => {
-        // fallback catalog remains active
-      })
-      .finally(() => {
+
+        if (!specLoaded && active) {
+          try {
+            const healthRes = await fetchWithRetry(`${API_BASE}/health`, { method: "GET" }, 15000, 1);
+            if (!active) return;
+            setApiStatus(healthRes.ok ? "ready" : "degraded");
+          } catch {
+            if (!active) return;
+            setApiStatus("degraded");
+          }
+        }
+      } finally {
         if (active) setCatalogLoading(false);
-      });
+      }
+    })();
 
     return () => {
       active = false;
@@ -623,19 +644,9 @@ export default function Home() {
         textbook_medium: med,
         answer_language: ansLang,
       });
-      let res = await fetchWithRetry(
-        `${API_BASE}/ask/stream`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: payload,
-        },
-        30000,
-        1
-      );
-      if (res.status === 404 || res.status === 405) {
-        res = await fetchWithRetry(
-          `${API_BASE}/ask`,
+      const postAsk = (path: "/ask/stream" | "/ask") =>
+        fetchWithRetry(
+          `${API_BASE}${path}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -644,6 +655,10 @@ export default function Home() {
           30000,
           1
         );
+      let res = await postAsk(supportsStreamRef.current ? "/ask/stream" : "/ask");
+      if (supportsStreamRef.current && (res.status === 404 || res.status === 405)) {
+        supportsStreamRef.current = false;
+        res = await postAsk("/ask");
       }
       if (!res.ok) {
         throw new Error(`HTTP_${res.status}`);

@@ -151,7 +151,18 @@ def hybrid_search(
 
     terms = fts_terms(norm_q)
     tsq = " | ".join(terms)
-    qvec = _embed.to_pgvector((embed_fn or _embed.embed_query)(norm_q))
+    try:
+        qvec = _embed.to_pgvector((embed_fn or _embed.embed_query)(norm_q))
+    except ImportError:
+        return fts_search(
+            norm_q,
+            class_level,
+            subject,
+            k=k,
+            cfg=cfg,
+            curriculum_id=curriculum_id,
+            textbook_medium=textbook_medium,
+        )
     p = {
         "curr": curriculum_id,
         "med": textbook_medium,
