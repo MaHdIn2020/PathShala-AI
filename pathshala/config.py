@@ -52,7 +52,7 @@ def get_config() -> Config:
         embed_model=os.getenv("EMBED_MODEL", "BAAI/bge-m3"),
         embed_dim=int(os.getenv("EMBED_DIM", "1024")),
         retrieve_k=int(os.getenv("RETRIEVE_K", "30")),
-        rerank_k=int(os.getenv("RERANK_K", "4")),
+        rerank_k=int(os.getenv("RERANK_K", "6")),
         min_score=float(os.getenv("MIN_SCORE", "0.35")),
         verify=_b("VERIFY", True),
         rewrite=_b("REWRITE", True),

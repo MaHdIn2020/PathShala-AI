@@ -1,7 +1,8 @@
 import unittest
 
 from pathshala.llm import parse_json
-from pathshala.retrieval import fts_or_query, fts_terms, merge_neighbor_text, rrf
+from pathshala.pipeline import format_context
+from pathshala.retrieval import _is_boilerplate, _stem_en, _tsq_token, fts_or_query, fts_terms, merge_neighbor_text, rrf
 
 
 class TestRRF(unittest.TestCase):
@@ -16,6 +17,24 @@ class TestRRF(unittest.TestCase):
     def test_fts_terms_strips_stopwords_and_builds_or_query(self):
         self.assertEqual(fts_terms("খাদ্যশৃঙ্খল কাকে বলে?"), ["খাদ্যশৃঙ্খল"])
         self.assertEqual(fts_or_query("How to bake a chocolate cake?"), "bake | chocolate | cake")
+        self.assertEqual(fts_terms("What is the difference between an acid and a base?"), ["acid", "base"])
+        self.assertEqual(fts_terms("What is diffusion and how does it work in plants?"), ["diffusion", "plants"])
+
+    def test_stem_and_tsq_token_cover_plurals_and_boilerplate(self):
+        self.assertEqual(_stem_en("acids"), "acid")
+        self.assertEqual(_stem_en("bases"), "base")
+        self.assertEqual(_stem_en("plants"), "plant")
+        self.assertEqual(_tsq_token("acids"), "acid:*")
+        self.assertTrue(_is_boilerplate("Sample Questions\nMultiple Choice Questions\n1. Acid test"))
+        self.assertTrue(_is_boilerplate("Stem:\na. What is diffusion?\nb. Explain osmosis."))
+        self.assertFalse(_is_boilerplate("Acids turn blue litmus paper red and taste sour."))
+
+    def test_format_context_defaults_to_six_chunks(self):
+        chunks = [{"id": i, "text": f"chunk body {i}"} for i in range(1, 8)]
+        ctx = format_context(chunks)
+        for i in range(1, 7):
+            self.assertIn(f"[{i}]", ctx)
+        self.assertNotIn("[7]", ctx)
 
     def test_merge_neighbor_text_expands_only_short_fragments(self):
         short_c = {"id": 1, "text": "Chapter 3"}

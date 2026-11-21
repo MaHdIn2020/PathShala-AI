@@ -118,7 +118,7 @@ def should_skip_verify(top_score: float | None, cites: list[dict], threshold: fl
     return bool(cites) and top_score is not None and top_score >= threshold
 
 
-def format_context(chunks: list[dict], max_chars: int = 3600, max_chunks: int = 4, max_chunk_chars: int = 800) -> str:
+def format_context(chunks: list[dict], max_chars: int = 3600, max_chunks: int = 6, max_chunk_chars: int = 800) -> str:
     parts, used = [], 0
     for c in chunks[:max_chunks]:
         pg = ""
@@ -300,7 +300,7 @@ def build_graph(cfg, retrieve_fn, llm_fn):
                 "refused": True,
                 "reason": "low_retrieval",
             }
-        ctx = format_context(chunks, cfg.max_context_chars)
+        ctx = format_context(chunks, cfg.max_context_chars, max_chunks=max(4, cfg.rerank_k))
         return {
             "chunks": chunks,
             "top_score": top_score,
