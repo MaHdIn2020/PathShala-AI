@@ -9,6 +9,10 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+      - key: DATABASE_URL_BN_SSC
+        sync: false
+      - key: DATABASE_URL_EN
+        sync: false
       - key: LLM_MODEL
         value: gemini/gemini-flash-lite-latest
       - key: LLM_FAST_MODEL

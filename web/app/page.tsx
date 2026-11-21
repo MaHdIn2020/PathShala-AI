@@ -235,6 +235,11 @@ const SUBJECT_LABELS: Record<string, { bn: string; en: string }> = {
   history: { bn: "বাংলাদেশের ইতিহাস ও বিশ্বসভ্যতা", en: "History" },
   finance: { bn: "ফিন্যান্স ও ব্যাংকিং", en: "Finance & Banking" },
   career_education: { bn: "ক্যারিয়ার শিক্ষা", en: "Career Education" },
+  arabic: { bn: "আরবি", en: "Arabic" },
+  music: { bn: "সংগীত", en: "Music" },
+  pali: { bn: "পালি", en: "Pali" },
+  sanskrit: { bn: "সংস্কৃত", en: "Sanskrit" },
+  business_entrepreneurship: { bn: "ব্যবসায় উদ্যোগ", en: "Business Entrepreneurship" },
 };
 
 function subjectName(slug: string, uiLang: "bn" | "en"): string {
@@ -253,44 +258,144 @@ function formatPageLabel(c: Citation, uiLang: "bn" | "en"): string {
   return uiLang === "bn" ? "অধ্যায়-ভিত্তিক উৎস (পৃষ্ঠা নম্বর নেই)" : "Chapter-level source (no page #)";
 }
 
-const FALLBACK_CATALOG: CatalogBook[] = [
-  ...[1, 2].flatMap((c) =>
-    ["bangla", "english", "math"].map((s, idx) => ({
-      id: c * 100 + idx,
+const FALLBACK_SPEC: Array<["bangla_version" | "english_version", number[], string[]]> = [
+  ["bangla_version", [1, 2], ["bangla", "english", "math"]],
+  [
+    "bangla_version",
+    [3, 4, 5],
+    ["bangla", "bgs", "buddhist_religion", "christian_religion", "english", "hindu_religion", "islam", "math", "science"],
+  ],
+  [
+    "bangla_version",
+    [6, 7, 8],
+    [
+      "agriculture",
+      "arabic",
+      "arts_and_crafts",
+      "bangla",
+      "bangla_grammar",
+      "bangla_rapidreader",
+      "bgs",
+      "buddhist_religion",
+      "christian_religion",
+      "english",
+      "english_grammar",
+      "hindu_religion",
+      "home_science",
+      "ict",
+      "islam",
+      "math",
+      "music",
+      "pali",
+      "physical_education",
+      "sanskrit",
+      "science",
+      "work_and_life",
+    ],
+  ],
+  [
+    "bangla_version",
+    [9],
+    [
+      "accounting",
+      "agriculture",
+      "arabic",
+      "arts_and_crafts",
+      "bangla",
+      "bangla_grammar",
+      "bangla_rapidreader",
+      "bgs",
+      "biology_secondary",
+      "buddhist_religion",
+      "business_entrepreneurship",
+      "career_education",
+      "chemistry_secondary",
+      "christian_religion",
+      "civics",
+      "economics",
+      "english",
+      "english_grammar",
+      "finance",
+      "geography",
+      "higher_math",
+      "hindu_religion",
+      "history",
+      "home_science",
+      "ict",
+      "islam",
+      "math",
+      "music",
+      "pali",
+      "physical_education",
+      "physics_secondary",
+      "sanskrit",
+      "science",
+    ],
+  ],
+  ["english_version", [1, 2], ["math"]],
+  [
+    "english_version",
+    [3, 4, 5],
+    ["bgs", "buddhist_religion", "christian_religion", "hindu_religion", "islam", "math", "science"],
+  ],
+  [
+    "english_version",
+    [6, 7, 8],
+    [
+      "agriculture",
+      "arts_and_crafts",
+      "bgs",
+      "buddhist_religion",
+      "christian_religion",
+      "hindu_religion",
+      "home_science",
+      "ict",
+      "islam",
+      "math",
+      "physical_education",
+      "science",
+      "work_and_life",
+    ],
+  ],
+  [
+    "english_version",
+    [9],
+    [
+      "accounting",
+      "agriculture",
+      "arts_and_crafts",
+      "bgs",
+      "career_education",
+      "civics",
+      "economics",
+      "finance",
+      "geography",
+      "higher_math",
+      "hindu_religion",
+      "history",
+      "home_science",
+      "ict",
+      "islam",
+      "math",
+      "science",
+    ],
+  ],
+];
+
+const FALLBACK_CATALOG: CatalogBook[] = FALLBACK_SPEC.flatMap(([med, classes, subjects]) =>
+  classes.flatMap((c) =>
+    subjects.map((s, idx) => ({
+      id: (med === "english_version" ? 5000 : 0) + c * 100 + idx,
       curriculum_id: "nctb",
-      textbook_medium: "bangla_version" as const,
+      textbook_medium: med,
       class_level: c,
       subject: s,
-      title: `NCTB শ্রেণি ${c} · ${s}`,
-      chunk_count: 50,
-      embedded_count: 50,
+      title: med === "english_version" ? `NCTB Class ${c} · ${s} (English Version)` : `NCTB শ্রেণি ${c} · ${s}`,
+      chunk_count: 100,
+      embedded_count: 100,
     }))
-  ),
-  ...[3, 4, 5].flatMap((c) =>
-    ["bangla", "math", "science", "english", "bgs", "islam", "hindu_religion", "buddhist_religion", "christian_religion"].map(
-      (s, idx) => ({
-        id: c * 100 + idx,
-        curriculum_id: "nctb",
-        textbook_medium: "bangla_version" as const,
-        class_level: c,
-        subject: s,
-        title: `NCTB শ্রেণি ${c} · ${s}`,
-        chunk_count: 100,
-        embedded_count: 100,
-      })
-    )
-  ),
-  {
-    id: 8001,
-    curriculum_id: "nctb",
-    textbook_medium: "english_version",
-    class_level: 8,
-    subject: "science",
-    title: "NCTB Class 8 · science (English Version)",
-    chunk_count: 824,
-    embedded_count: 824,
-  },
-];
+  )
+);
 
 const STARTER_PROMPTS = [
   {
